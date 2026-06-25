@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
+	"net/http"
+	"sync"
+	"time"
+
 	"chat-aggregator/internal/engine"
 	"chat-aggregator/internal/models"
 	"chat-aggregator/internal/storage"
-	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,8 +20,7 @@ type ChatRequest struct {
 }
 
 type ChatResponse struct {
-	SessionID string            `json:"session_id"`
-	Results   map[string]string `json:"results"`
+	SessionID string `json:"session_id"`
 }
 
 func (s *Server) handleChat(c *gin.Context) {
@@ -60,32 +62,51 @@ func (s *Server) handleChat(c *gin.Context) {
 		return
 	}
 
-	manager := engine.NewManager()
-	defer manager.Close()
+	c.JSON(http.StatusOK, ChatResponse{SessionID: sessionID})
 
-	results := make(map[string]string)
+	var wg sync.WaitGroup
 	for _, site := range targetSites {
-		start := time.Now()
-		content, err := manager.SendMessage(c.Request.Context(), site, req.Prompt)
-		elapsed := int(time.Since(start).Milliseconds())
+		wg.Add(1)
+		go func(site models.Site) {
+			defer wg.Done()
 
-		msgID := uuid.New().String()
-		errStr := ""
-		if err != nil {
-			errStr = err.Error()
-			content = ""
-		}
+			manager := engine.NewManager()
+			defer manager.Close()
 
-		if dbErr := storage.CreateMessage(s.db, msgID, sessionID, site.ID, content, errStr, elapsed); dbErr != nil {
-			// Log but continue
-		}
+			start := time.Now()
+			content, err := manager.SendMessage(context.Background(), site, req.Prompt)
+			elapsed := int(time.Since(start).Milliseconds())
 
-		if err == nil {
-			results[site.ID] = content
-		} else {
-			results[site.ID] = "ERROR: " + errStr
-		}
+			msgID := uuid.New().String()
+			errStr := ""
+			if err != nil {
+				errStr = err.Error()
+				content = ""
+			}
+
+			if dbErr := storage.CreateMessage(s.db, msgID, sessionID, site.ID, content, errStr, elapsed); dbErr != nil {
+				// Log but continue
+			}
+
+			update := MessageUpdate{
+				Type:      "message",
+				SessionID: sessionID,
+				SiteID:    site.ID,
+				Content:   content,
+				Error:     errStr,
+				ElapsedMs: elapsed,
+				Done:      true,
+			}
+			s.hub.Broadcast(update)
+		}(site)
 	}
 
-	c.JSON(http.StatusOK, ChatResponse{SessionID: sessionID, Results: results})
+	go func() {
+		wg.Wait()
+		s.hub.Broadcast(MessageUpdate{
+			Type:      "complete",
+			SessionID: sessionID,
+			Done:      true,
+		})
+	}()
 }

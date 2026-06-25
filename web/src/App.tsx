@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useSites } from './hooks/useSites'
+import { useWebSocket } from './hooks/useWebSocket'
 import SiteSidebar from './components/SiteSidebar'
 import ChatGrid from './components/ChatGrid'
 import InputArea from './components/InputArea'
@@ -7,12 +8,64 @@ import type { Message } from './types'
 
 interface ChatResponse {
   session_id: string
-  results: Record<string, string>
+}
+
+interface WSMessage {
+  type: string
+  session_id: string
+  site_id?: string
+  content?: string
+  error?: string
+  elapsed_ms?: number
+  done: boolean
 }
 
 export default function App() {
   const { sites, selectedSites, toggleSite } = useSites()
   const [messages, setMessages] = useState<Message[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+
+  useWebSocket((msg: WSMessage) => {
+    if (msg.type === 'message' && msg.site_id) {
+      const siteId = msg.site_id
+      const content = msg.content || ''
+      const error = msg.error || ''
+      const elapsedMs = msg.elapsed_ms || 0
+      setMessages((prev) => {
+        const id = `${msg.session_id}-${siteId}`
+        const exists = prev.find((m) => m.id === id)
+        if (exists) {
+          return prev.map((m) =>
+            m.id === id
+              ? {
+                  ...m,
+                  content,
+                  error,
+                  elapsed_ms: elapsedMs,
+                  loading: false,
+                }
+              : m,
+          )
+        }
+        return [
+          ...prev,
+          {
+            id,
+            session_id: msg.session_id,
+            site_id: siteId,
+            content,
+            kept: false,
+            error,
+            elapsed_ms: elapsedMs,
+            created_at: new Date().toISOString(),
+            loading: false,
+          },
+        ]
+      })
+    } else if (msg.type === 'complete') {
+      setIsLoading(false)
+    }
+  })
 
   const handleSend = useCallback(
     async (prompt: string) => {
@@ -31,20 +84,20 @@ export default function App() {
       }
 
       const data: ChatResponse = await res.json()
-      const newMessages: Message[] = []
+      setIsLoading(true)
 
+      const newMessages: Message[] = []
       for (const siteId of siteIds) {
-        const result = data.results[siteId] || ''
-        const hasError = result.startsWith('ERROR: ')
         newMessages.push({
           id: `${data.session_id}-${siteId}`,
           session_id: data.session_id,
           site_id: siteId,
-          content: hasError ? '' : result,
+          content: '',
           kept: false,
-          error: hasError ? result.slice(7) : '',
+          error: '',
           elapsed_ms: 0,
           created_at: new Date().toISOString(),
+          loading: true,
         })
       }
 
@@ -80,7 +133,7 @@ export default function App() {
               onToggleKeep={handleToggleKeep}
             />
           </div>
-          <InputArea onSend={handleSend} />
+          <InputArea onSend={handleSend} disabled={isLoading} />
         </main>
       </div>
     </div>

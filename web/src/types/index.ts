@@ -16,4 +16,5 @@ export interface Message {
   error: string
   elapsed_ms: number
   created_at: string
+  loading?: boolean
 }

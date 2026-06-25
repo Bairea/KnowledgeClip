@@ -23,6 +23,11 @@ type ChatResponse struct {
 	SessionID string `json:"session_id"`
 }
 
+type UpdateKeptRequest struct {
+	MessageID string `json:"message_id" binding:"required"`
+	Kept      bool   `json:"kept"`
+}
+
 func (s *Server) handleChat(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -89,15 +94,16 @@ func (s *Server) handleChat(c *gin.Context) {
 			}
 
 			update := MessageUpdate{
-				Type:      "message",
-				SessionID: sessionID,
-				SiteID:    site.ID,
-				Content:   content,
-				Error:     errStr,
-				ElapsedMs: elapsed,
-				Done:      true,
-			}
-			s.hub.Broadcast(update)
+			Type:      "message",
+			SessionID: sessionID,
+			MessageID: msgID,
+			SiteID:    site.ID,
+			Content:   content,
+			Error:     errStr,
+			ElapsedMs: elapsed,
+			Done:      true,
+		}
+		s.hub.Broadcast(update)
 		}(site)
 	}
 
@@ -109,4 +115,19 @@ func (s *Server) handleChat(c *gin.Context) {
 			Done:      true,
 		})
 	}()
+}
+
+func (s *Server) handleUpdateKept(c *gin.Context) {
+	var req UpdateKeptRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := storage.UpdateMessageKept(s.db, req.MessageID, req.Kept); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

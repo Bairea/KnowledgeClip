@@ -9,6 +9,7 @@ export interface Site {
 
 export interface Message {
   id: string
+  message_id?: string
   session_id: string
   site_id: string
   content: string

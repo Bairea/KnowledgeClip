@@ -11,6 +11,7 @@ import (
 type MessageUpdate struct {
 	Type      string `json:"type"`
 	SessionID string `json:"session_id"`
+	MessageID string `json:"message_id,omitempty"`
 	SiteID    string `json:"site_id,omitempty"`
 	Content   string `json:"content,omitempty"`
 	Error     string `json:"error,omitempty"`

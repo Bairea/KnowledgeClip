@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 interface WSMessage {
   type: string
   session_id: string
+  message_id?: string
   site_id?: string
   content?: string
   error?: string

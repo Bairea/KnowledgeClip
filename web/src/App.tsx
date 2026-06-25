@@ -13,11 +13,17 @@ interface ChatResponse {
 interface WSMessage {
   type: string
   session_id: string
+  message_id?: string
   site_id?: string
   content?: string
   error?: string
   elapsed_ms?: number
   done: boolean
+}
+
+interface UpdateKeptPayload {
+  message_id: string
+  kept: boolean
 }
 
 export default function App() {
@@ -31,6 +37,7 @@ export default function App() {
       const content = msg.content || ''
       const error = msg.error || ''
       const elapsedMs = msg.elapsed_ms || 0
+      const messageId = msg.message_id || ''
       setMessages((prev) => {
         const id = `${msg.session_id}-${siteId}`
         const exists = prev.find((m) => m.id === id)
@@ -43,6 +50,7 @@ export default function App() {
                   error,
                   elapsed_ms: elapsedMs,
                   loading: false,
+                  message_id: messageId || m.message_id,
                 }
               : m,
           )
@@ -51,6 +59,7 @@ export default function App() {
           ...prev,
           {
             id,
+            message_id: messageId,
             session_id: msg.session_id,
             site_id: siteId,
             content,
@@ -106,13 +115,45 @@ export default function App() {
     [selectedSites],
   )
 
-  const handleToggleKeep = useCallback((id: string) => {
-    setMessages((prev) =>
-      prev.map((msg) =>
-        msg.id === id ? { ...msg, kept: !msg.kept } : msg,
-      ),
-    )
-  }, [])
+  const handleToggleKeep = useCallback(
+    async (id: string) => {
+      const msg = messages.find((m) => m.id === id)
+      if (!msg?.message_id) {
+        return
+      }
+
+      const newKept = !msg.kept
+      const payload: UpdateKeptPayload = {
+        message_id: msg.message_id,
+        kept: newKept,
+      }
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === id ? { ...m, kept: newKept } : m,
+        ),
+      )
+
+      try {
+        const res = await fetch('/api/messages/kept', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
+      } catch (err) {
+        console.error('Failed to update keep state:', err)
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === id ? { ...m, kept: msg.kept } : m,
+          ),
+        )
+      }
+    },
+    [messages],
+  )
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-white">

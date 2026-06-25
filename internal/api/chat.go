@@ -113,6 +113,25 @@ func (s *Server) handleChat(c *gin.Context) {
 	}()
 }
 
+func (s *Server) handleGetSessions(c *gin.Context) {
+	sessions, err := storage.GetSessions(s.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, sessions)
+}
+
+func (s *Server) handleGetSessionMessages(c *gin.Context) {
+	sessionID := c.Param("id")
+	messages, err := storage.GetMessagesBySession(s.db, sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, messages)
+}
+
 func (s *Server) handleUpdateKept(c *gin.Context) {
 	var req UpdateKeptRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

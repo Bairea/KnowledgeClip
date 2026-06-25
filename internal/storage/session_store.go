@@ -37,3 +37,26 @@ func GetSessionByID(db *DB, id string) (*models.Session, error) {
 	}
 	return &session, nil
 }
+
+func GetSessions(db *DB) ([]models.Session, error) {
+	rows, err := db.Conn().Query(`SELECT id, prompt, created_at FROM sessions ORDER BY created_at DESC LIMIT 50`)
+	if err != nil {
+		return nil, fmt.Errorf("query sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []models.Session
+	for rows.Next() {
+		var session models.Session
+		if err := rows.Scan(&session.ID, &session.Prompt, &session.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		sessions = append(sessions, session)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sessions: %w", err)
+	}
+
+	return sessions, nil
+}

@@ -6,6 +6,7 @@ import ChatGrid from './components/ChatGrid'
 import InputArea from './components/InputArea'
 import ExportPanel from './components/ExportPanel'
 import SiteConfigModal from './components/SiteConfigModal'
+import HistoryPanel from './components/HistoryPanel'
 import type { Message, Site } from './types'
 
 interface SiteFormData {
@@ -44,6 +45,7 @@ export default function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [showConfig, setShowConfig] = useState(false)
   const [editingSite, setEditingSite] = useState<SiteFormData | null>(null)
+  const [showHistory, setShowHistory] = useState(false)
 
   useWebSocket((msg: WSMessage) => {
     if (msg.type === 'message' && msg.site_id) {
@@ -216,11 +218,61 @@ export default function App() {
     [editingSite, closeConfig, fetchSites],
   )
 
+  const handleSelectSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/messages`)
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
+        const data = await res.json()
+        const loadedMessages: Message[] = data.map((msg: Record<string, unknown>) => ({
+          id: `${msg.session_id}-${msg.site_id}`,
+          message_id: String(msg.id || ''),
+          session_id: String(msg.session_id || ''),
+          site_id: String(msg.site_id || ''),
+          content: String(msg.content || ''),
+          kept: Boolean(msg.kept),
+          error: String(msg.error || ''),
+          elapsed_ms: Number(msg.elapsed_ms || 0),
+          created_at: String(msg.created_at || ''),
+          loading: false,
+        }))
+        setCurrentSessionId(sessionId)
+        setMessages(loadedMessages)
+        setIsLoading(false)
+      } catch (err) {
+        console.error('Failed to load session messages:', err)
+      }
+    },
+    [],
+  )
+
+  const handleNewChat = useCallback(() => {
+    setCurrentSessionId(null)
+    setMessages([])
+    setIsLoading(false)
+  }, [])
+
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-white">
       <header className="flex items-center justify-between border-b border-slate-700 bg-slate-900 px-4 py-3">
         <span className="text-lg font-semibold">Chat Aggregator</span>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setShowHistory((prev) => !prev)}
+            className="rounded-md bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
+          >
+            {showHistory ? '隐藏历史' : '历史记录'}
+          </button>
+          <button
+            type="button"
+            onClick={handleNewChat}
+            className="rounded-md bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
+          >
+            New Chat
+          </button>
           <button
             type="button"
             onClick={openNewSite}
@@ -238,6 +290,12 @@ export default function App() {
           toggleSite={toggleSite}
           onEditSite={openEditSite}
         />
+        {showHistory && (
+          <HistoryPanel
+            onSelectSession={handleSelectSession}
+            currentSessionId={currentSessionId}
+          />
+        )}
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex-1 overflow-auto">
             <ChatGrid

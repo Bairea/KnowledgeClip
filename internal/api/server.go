@@ -34,6 +34,8 @@ func (s *Server) setupRoutes() {
 	s.router.PUT("/api/sites/:id", s.handleUpdateSite)
 	s.router.DELETE("/api/sites/:id", s.handleDeleteSite)
 	s.router.POST("/api/chat", s.handleChat)
+	s.router.GET("/api/sessions", s.handleGetSessions)
+	s.router.GET("/api/sessions/:id/messages", s.handleGetSessionMessages)
 	s.router.POST("/api/messages/kept", s.handleUpdateKept)
 	s.router.GET("/api/export", s.handleExport)
 	s.router.GET("/ws", s.hub.handleWebSocket)

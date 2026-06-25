@@ -7,6 +7,12 @@ export interface Site {
   format_prompt: string
 }
 
+export interface Session {
+  id: string
+  prompt: string
+  created_at: string
+}
+
 export interface Message {
   id: string
   message_id?: string

@@ -4,6 +4,7 @@ import { useWebSocket } from './hooks/useWebSocket'
 import SiteSidebar from './components/SiteSidebar'
 import ChatGrid from './components/ChatGrid'
 import InputArea from './components/InputArea'
+import ExportPanel from './components/ExportPanel'
 import type { Message } from './types'
 
 interface ChatResponse {
@@ -30,6 +31,7 @@ export default function App() {
   const { sites, selectedSites, toggleSite } = useSites()
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
 
   useWebSocket((msg: WSMessage) => {
     if (msg.type === 'message' && msg.site_id) {
@@ -93,6 +95,7 @@ export default function App() {
       }
 
       const data: ChatResponse = await res.json()
+      setCurrentSessionId(data.session_id)
       setIsLoading(true)
 
       const newMessages: Message[] = []
@@ -157,8 +160,9 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-white">
-      <header className="border-b border-slate-700 bg-slate-900 px-4 py-3 text-lg font-semibold">
-        Chat Aggregator
+      <header className="flex items-center justify-between border-b border-slate-700 bg-slate-900 px-4 py-3">
+        <span className="text-lg font-semibold">Chat Aggregator</span>
+        <ExportPanel sessionId={currentSessionId} />
       </header>
       <div className="flex flex-1 overflow-hidden">
         <SiteSidebar

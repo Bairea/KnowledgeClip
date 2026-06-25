@@ -30,6 +30,7 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/api/sites", s.handleGetSites)
 	s.router.POST("/api/chat", s.handleChat)
 	s.router.POST("/api/messages/kept", s.handleUpdateKept)
+	s.router.GET("/api/export", s.handleExport)
 	s.router.GET("/ws", s.hub.handleWebSocket)
 }
 

@@ -123,3 +123,49 @@ WebSocket 消息协议与 `internal/api/websocket.go` 的 `MessageUpdate` 严格
 - 不生成测试脚本和项目文档（除非明确要求）。
 - 中文 md，英文 Angular 风格 commit：`feat(scope): summary`，正文三段 `Agent-Task` / `Agent-Decision` / `Agent-Limitation`，不带 `Co-Authored-By`。
 - 报错信息追加到全局 `C:\Users\baizhicong\.claude\CLAUDE.md`。
+
+## 修改记录
+
+### 2026-06-25 修复 JSON 标签与显示问题
+- `internal/models/models.go`：为所有模型结构体添加 `json` 标签，修复 gin 序列化后字段名大写导致前端无法读取的问题。
+
+### 2026-06-25 修复 rod 引擎与多轮对话
+- `internal/engine/rod_engine.go`：
+  - 新增 `pages map[string]*rod.Page` 实现 page 复用，同一站点多轮对话不再新建 tab
+  - `typePrompt` 支持三层输入降级：`Input()` -> JS 设置 value -> JS 设置 innerText/contentEditable
+  - `submitPrompt` 支持两层提交降级：`Click()` -> JS 触发 Enter 键盘事件
+  - `getLastAnswerText` 取最后一个 answer 元素（最新消息）
+  - 通过 answer 元素数量变化检测新回答出现
+  - 新增 `ResetPages()` 用于新会话时重置所有 page
+- `internal/engine/manager.go`：新增 `PageResetter` 接口和 `ResetPages()` 方法
+- `internal/api/chat.go`：
+  - `ChatRequest` 新增可选 `session_id` 字段
+  - 提供 `session_id` 时复用现有会话（多轮对话）
+  - 仅新会话时调用 `ResetPages()`
+
+### 2026-06-25 前端多轮对话与历史记录常驻
+- `web/src/types/index.ts`：`Message` 新增 `turn?: number`，新增 `Turn` 接口
+- `web/src/App.tsx`：
+  - 引入 `turn` 概念，使用 `currentTurnRef` 追踪轮次
+  - 同一 session 内发送消息追加 turn，不再替换 messages
+  - `HistoryPanel` 从条件渲染改为常驻左侧第一列
+  - 对话区域按 turn 分组显示：用户提问横幅 + 对应回答卡片网格
+  - `New Chat` 重置 turn 和 messages
+- `web/src/components/HistoryPanel.tsx`：移除条件渲染相关代码，作为独立常驻侧边栏工作
+
+## 开发与验证约定
+
+每次修改代码后，必须按以下顺序执行编译与运行：
+
+```bash
+# 1. 编译前端
+cd web && npm run build
+
+# 2. 编译后端
+cd .. && go build -o bin/server.exe cmd/server/main.go
+
+# 3. 运行（确保旧进程已停止）
+make dev
+```
+
+前端修改后必须先 `npm run build`，因为 `internal/api/static.go` 用 `//go:embed` 内嵌产物。直接 `go build` 会 embed 旧文件。

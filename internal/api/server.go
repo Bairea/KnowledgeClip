@@ -7,13 +7,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func NewServer(db *storage.DB) {
+type Server struct {
+	router *gin.Engine
+	db     *storage.DB
+}
+
+func NewServer(db *storage.DB) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 
-	r.GET("/api/health", func(c *gin.Context) {
+	s := &Server{router: r, db: db}
+	s.setupRoutes()
+
+	return s
+}
+
+func (s *Server) setupRoutes() {
+	s.router.GET("/api/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	s.router.GET("/api/sites", s.handleGetSites)
+	s.router.POST("/api/chat", s.handleChat)
+}
 
-	r.Run(":8080")
+func (s *Server) Run(addr string) error {
+	return s.router.Run(addr)
 }

@@ -24,5 +24,8 @@ func main() {
 		log.Fatalf("sync sites: %v", err)
 	}
 
-	api.NewServer(db)
+	server := api.NewServer(db)
+	if err := server.Run(":8080"); err != nil {
+		log.Fatalf("run server: %v", err)
+	}
 }

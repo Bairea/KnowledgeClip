@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { useSites } from './hooks/useSites'
 import { useWebSocket } from './hooks/useWebSocket'
 import SiteSidebar from './components/SiteSidebar'
@@ -38,6 +38,12 @@ interface UpdateKeptPayload {
   kept: boolean
 }
 
+interface TurnInfo {
+  turn: number
+  prompt: string
+  siteIds: string[]
+}
+
 export default function App() {
   const { sites, selectedSites, toggleSite, fetchSites } = useSites()
   const [messages, setMessages] = useState<Message[]>([])
@@ -45,7 +51,9 @@ export default function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [showConfig, setShowConfig] = useState(false)
   const [editingSite, setEditingSite] = useState<SiteFormData | null>(null)
-  const [showHistory, setShowHistory] = useState(false)
+  const [turns, setTurns] = useState<TurnInfo[]>([])
+
+  const currentTurnRef = useRef(0)
 
   useWebSocket((msg: WSMessage) => {
     if (msg.type === 'message' && msg.site_id) {
@@ -54,8 +62,10 @@ export default function App() {
       const error = msg.error || ''
       const elapsedMs = msg.elapsed_ms || 0
       const messageId = msg.message_id || ''
+      const turn = currentTurnRef.current
+
       setMessages((prev) => {
-        const id = `${msg.session_id}-${siteId}`
+        const id = `${msg.session_id}-${siteId}-${turn}`
         const exists = prev.find((m) => m.id === id)
         if (exists) {
           return prev.map((m) =>
@@ -84,6 +94,7 @@ export default function App() {
             elapsed_ms: elapsedMs,
             created_at: new Date().toISOString(),
             loading: false,
+            turn,
           },
         ]
       })
@@ -97,10 +108,17 @@ export default function App() {
       const siteIds = Array.from(selectedSites)
       if (siteIds.length === 0) return
 
+      const nextTurn = currentTurnRef.current + 1
+      currentTurnRef.current = nextTurn
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, site_ids: siteIds }),
+        body: JSON.stringify({
+          prompt,
+          site_ids: siteIds,
+          session_id: currentSessionId || undefined,
+        }),
       })
 
       if (!res.ok) {
@@ -109,13 +127,20 @@ export default function App() {
       }
 
       const data: ChatResponse = await res.json()
-      setCurrentSessionId(data.session_id)
+      if (!currentSessionId) {
+        setCurrentSessionId(data.session_id)
+      }
       setIsLoading(true)
+
+      setTurns((prev) => [
+        ...prev,
+        { turn: nextTurn, prompt, siteIds },
+      ])
 
       const newMessages: Message[] = []
       for (const siteId of siteIds) {
         newMessages.push({
-          id: `${data.session_id}-${siteId}`,
+          id: `${data.session_id}-${siteId}-${nextTurn}`,
           session_id: data.session_id,
           site_id: siteId,
           content: '',
@@ -124,12 +149,13 @@ export default function App() {
           elapsed_ms: 0,
           created_at: new Date().toISOString(),
           loading: true,
+          turn: nextTurn,
         })
       }
 
       setMessages((prev) => [...prev, ...newMessages])
     },
-    [selectedSites],
+    [selectedSites, currentSessionId],
   )
 
   const handleToggleKeep = useCallback(
@@ -241,6 +267,8 @@ export default function App() {
         setCurrentSessionId(sessionId)
         setMessages(loadedMessages)
         setIsLoading(false)
+        currentTurnRef.current = 0
+        setTurns([])
       } catch (err) {
         console.error('Failed to load session messages:', err)
       }
@@ -252,6 +280,8 @@ export default function App() {
     setCurrentSessionId(null)
     setMessages([])
     setIsLoading(false)
+    currentTurnRef.current = 0
+    setTurns([])
   }, [])
 
   return (
@@ -259,13 +289,6 @@ export default function App() {
       <header className="flex items-center justify-between border-b border-slate-700 bg-slate-900 px-4 py-3">
         <span className="text-lg font-semibold">Chat Aggregator</span>
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setShowHistory((prev) => !prev)}
-            className="rounded-md bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
-          >
-            {showHistory ? '隐藏历史' : '历史记录'}
-          </button>
           <button
             type="button"
             onClick={handleNewChat}
@@ -284,25 +307,39 @@ export default function App() {
         </div>
       </header>
       <div className="flex flex-1 overflow-hidden">
+        <HistoryPanel
+          onSelectSession={handleSelectSession}
+          currentSessionId={currentSessionId}
+        />
         <SiteSidebar
           sites={sites}
           selectedSites={selectedSites}
           toggleSite={toggleSite}
           onEditSite={openEditSite}
         />
-        {showHistory && (
-          <HistoryPanel
-            onSelectSession={handleSelectSession}
-            currentSessionId={currentSessionId}
-          />
-        )}
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex-1 overflow-auto">
-            <ChatGrid
-              messages={messages}
-              sites={sites}
-              onToggleKeep={handleToggleKeep}
-            />
+            {turns.length === 0 && messages.length === 0 && (
+              <div className="flex h-full items-center justify-center text-slate-500">
+                <div className="text-center">
+                  <p className="text-lg font-medium">开始新对话</p>
+                  <p className="mt-2 text-sm">选择左侧站点，输入问题开始多轮对话</p>
+                </div>
+              </div>
+            )}
+            {turns.map((turn) => (
+              <div key={turn.turn} className="border-b border-slate-800">
+                <div className="bg-slate-900/50 px-4 py-2">
+                  <span className="text-xs font-medium text-slate-400">你</span>
+                  <p className="mt-0.5 text-sm text-slate-200">{turn.prompt}</p>
+                </div>
+                <ChatGrid
+                  messages={messages.filter((m) => m.turn === turn.turn)}
+                  sites={sites}
+                  onToggleKeep={handleToggleKeep}
+                />
+              </div>
+            ))}
           </div>
           <InputArea onSend={handleSend} disabled={isLoading} />
         </main>

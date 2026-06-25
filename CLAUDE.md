@@ -29,6 +29,14 @@ npm run build   # tsc + vite build，输出到 ../internal/api/static/
 
 后端默认监听 `:8080`。`npm run build` 会 `emptyOutDir: true` 清空 `internal/api/static`，构建后必须重新 `go build`，否则旧二进制仍服务旧资源。
 
+**构建顺序陷阱**：`internal/api/static.go` 用了 `//go:embed all:static` 把前端产物打进二进制。`go build` 时只会 embed **当时目录里**的产物。所以改完前端代码后：
+1. **先**跑 `cd web && npm run build`（写入新 hash 的 `index-*.js`/`index-*.css` 到 `internal/api/static/`）
+2. **再**跑 `go build`（embed 这些新文件）
+
+反过来的话，binary 会被 embed 进 npm run build 之前还在的旧文件，而 `emptyOutDir: true` 会把旧文件删掉——结果是 binary 服务的 index.html 引用一个目录里已经不存在、但 binary 内部仍 embed 着的旧 asset hash。验证方法：跑完后 `curl -s http://localhost:8080/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'` 应该和 `ls internal/api/static/assets/` 列出的文件同名。
+
+**重启顺序陷阱**：Go 编译的二进制在 Windows 上不能被运行中的进程覆盖替换（会报 sharing violation）。改完代码后必须：先 `TaskStop` 旧进程 → 再 `go build` → 再启动新进程。如果只 build 不停进程，新代码写不进 binary。
+
 无测试套件；没有 lint / format 配置（仅靠 `gofmt` 与 `tsc --noEmit` 兜底）。
 
 ## 后端架构（`cmd/server`, `internal/`）

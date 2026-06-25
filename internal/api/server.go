@@ -3,7 +3,6 @@ package api
 import (
 	"chat-aggregator/internal/engine"
 	"chat-aggregator/internal/storage"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,9 +26,7 @@ func NewServer(db *storage.DB, manager *engine.Manager) *Server {
 }
 
 func (s *Server) setupRoutes() {
-	s.router.GET("/api/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	s.router.GET("/api/health", s.handleHealth)
 	s.router.GET("/api/sites", s.handleGetSites)
 	s.router.POST("/api/sites", s.handleCreateSite)
 	s.router.PUT("/api/sites/:id", s.handleUpdateSite)

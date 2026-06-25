@@ -43,6 +43,11 @@ func (s *Server) handleCreateSite(c *gin.Context) {
 		return
 	}
 
+	if req.Selectors["input"] == "" || req.Selectors["submit"] == "" || req.Selectors["answer"] == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "selectors.input, selectors.submit and selectors.answer are required"})
+		return
+	}
+
 	selectorsJSON, err := json.Marshal(req.Selectors)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -92,6 +97,10 @@ func (s *Server) handleUpdateSite(c *gin.Context) {
 
 	var selectorsJSON []byte
 	if req.Selectors != nil {
+		if req.Selectors["input"] == "" || req.Selectors["submit"] == "" || req.Selectors["answer"] == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "selectors.input, selectors.submit and selectors.answer are required"})
+			return
+		}
 		selectorsJSON, err = json.Marshal(req.Selectors)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -51,13 +51,28 @@ func (h *Hub) Remove(conn *websocket.Conn) {
 
 func (h *Hub) Broadcast(msg MessageUpdate) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-
+	conns := make([]*websocket.Conn, 0, len(h.clients))
 	for conn := range h.clients {
+		conns = append(conns, conn)
+	}
+	h.mu.RUnlock()
+
+	var failed []*websocket.Conn
+	for _, conn := range conns {
 		if err := conn.WriteJSON(msg); err != nil {
-			conn.Close()
-			delete(h.clients, conn)
+			failed = append(failed, conn)
 		}
+	}
+
+	if len(failed) > 0 {
+		h.mu.Lock()
+		for _, conn := range failed {
+			if _, ok := h.clients[conn]; ok {
+				conn.Close()
+				delete(h.clients, conn)
+			}
+		}
+		h.mu.Unlock()
 	}
 }
 

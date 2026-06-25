@@ -49,8 +49,7 @@ func DetectSelectors(url string) (map[string]string, error) {
 		return nil, fmt.Errorf("wait load: %w", err)
 	}
 
-	// Give dynamic content a moment to render
-	time.Sleep(2 * time.Second)
+	_ = page.WaitIdle(5 * time.Second)
 
 	result := make(map[string]string)
 

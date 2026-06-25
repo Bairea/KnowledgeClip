@@ -18,24 +18,33 @@ export function useWebSocket(onMessage: (msg: WSMessage) => void) {
   onMessageRef.current = onMessage
 
   useEffect(() => {
+    let attempt = 0
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let closedByUnmount = false
+
     const connect = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
+
+      ws.onopen = () => {
+        attempt = 0
+      }
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data) as WSMessage
           onMessageRef.current(data)
         } catch {
-          // Ignore invalid messages
+          // ignore invalid JSON
         }
       }
 
       ws.onclose = () => {
         wsRef.current = null
-        setTimeout(() => {
-          window.location.reload()
-        }, 3000)
+        if (closedByUnmount) return
+        const delay = Math.min(30000, 1000 * Math.pow(2, attempt))
+        attempt++
+        timer = setTimeout(connect, delay)
       }
 
       ws.onerror = () => {
@@ -48,6 +57,8 @@ export function useWebSocket(onMessage: (msg: WSMessage) => void) {
     connect()
 
     return () => {
+      closedByUnmount = true
+      if (timer) clearTimeout(timer)
       if (wsRef.current) {
         wsRef.current.close()
       }

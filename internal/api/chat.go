@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -14,8 +16,9 @@ import (
 )
 
 type ChatRequest struct {
-	Prompt  string   `json:"prompt" binding:"required"`
-	SiteIDs []string `json:"site_ids"`
+	Prompt    string   `json:"prompt" binding:"required"`
+	SiteIDs   []string `json:"site_ids"`
+	SessionID string   `json:"session_id"`
 }
 
 type ChatResponse struct {
@@ -43,6 +46,13 @@ func (s *Server) handleChat(c *gin.Context) {
 	var targetSites []models.Site
 	for _, site := range sites {
 		if !site.Enabled {
+			if len(req.SiteIDs) > 0 {
+				for _, id := range req.SiteIDs {
+					if id == site.ID {
+						log.Printf("chat: skip disabled site id=%s (requested by client)", site.ID)
+					}
+				}
+			}
 			continue
 		}
 		if len(req.SiteIDs) > 0 {
@@ -60,19 +70,39 @@ func (s *Server) handleChat(c *gin.Context) {
 		targetSites = append(targetSites, site)
 	}
 
-	sessionID := uuid.New().String()
-	if err := storage.CreateSession(s.db, sessionID, req.Prompt); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	sessionID := req.SessionID
+	isNewSession := sessionID == ""
+	if isNewSession {
+		sessionID = uuid.New().String()
+		if err := storage.CreateSession(s.db, sessionID, req.Prompt); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, ChatResponse{SessionID: sessionID})
+
+	if isNewSession {
+		s.manager.ResetPages()
+	}
 
 	var wg sync.WaitGroup
 	for _, site := range targetSites {
 		wg.Add(1)
 		go func(site models.Site) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("chat goroutine panic: site=%s err=%v", site.ID, r)
+					s.hub.Broadcast(MessageUpdate{
+						Type:      "message",
+						SessionID: sessionID,
+						SiteID:    site.ID,
+						Error:     fmt.Sprintf("internal panic: %v", r),
+						Done:      true,
+					})
+				}
+			}()
 
 			start := time.Now()
 			content, err := s.manager.SendMessage(context.Background(), site, req.Prompt)
@@ -86,10 +116,10 @@ func (s *Server) handleChat(c *gin.Context) {
 			}
 
 			if dbErr := storage.CreateMessage(s.db, msgID, sessionID, site.ID, content, errStr, elapsed); dbErr != nil {
-				// Log but continue
+				log.Printf("create message: site=%s err=%v", site.ID, dbErr)
 			}
 
-			update := MessageUpdate{
+			s.hub.Broadcast(MessageUpdate{
 				Type:      "message",
 				SessionID: sessionID,
 				MessageID: msgID,
@@ -98,8 +128,7 @@ func (s *Server) handleChat(c *gin.Context) {
 				Error:     errStr,
 				ElapsedMs: elapsed,
 				Done:      true,
-			}
-			s.hub.Broadcast(update)
+			})
 		}(site)
 	}
 

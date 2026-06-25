@@ -24,4 +24,11 @@ export interface Message {
   elapsed_ms: number
   created_at: string
   loading?: boolean
+  turn?: number
+}
+
+export interface Turn {
+  turn: number
+  prompt: string
+  messages: Message[]
 }

@@ -16,7 +16,7 @@ interface SiteConfigModalProps {
   onSave: (data: SiteFormData) => void
 }
 
-const ENGINE_OPTIONS = ['cdp', 'playwright', 'ts-playwright']
+const ENGINE_OPTIONS = ['cdp', 'playwright']
 
 function createEmptyForm(): SiteFormData {
   return {

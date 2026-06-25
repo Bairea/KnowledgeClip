@@ -22,17 +22,22 @@ export function useSites() {
     fetchSites()
   }, [fetchSites])
 
-  const toggleSite = useCallback((id: string) => {
-    setSelectedSites((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
-      return next
-    })
-  }, [])
+  const toggleSite = useCallback(
+    (id: string) => {
+      const site = sites.find((s) => s.id === id)
+      if (!site || !site.enabled) return
+      setSelectedSites((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) {
+          next.delete(id)
+        } else {
+          next.add(id)
+        }
+        return next
+      })
+    },
+    [sites],
+  )
 
   return { sites, selectedSites, toggleSite, fetchSites }
 }

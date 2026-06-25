@@ -21,7 +21,7 @@ export default function HistoryPanel({ onSelectSession, currentSessionId }: Hist
         return res.json()
       })
       .then((data: Session[]) => {
-        setSessions(data)
+        setSessions(data || [])
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : String(err))

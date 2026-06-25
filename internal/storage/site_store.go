@@ -126,7 +126,7 @@ func GetSites(db *DB) ([]models.Site, error) {
 	}
 	defer rows.Close()
 
-	var sites []models.Site
+	var sites []models.Site = []models.Site{}
 	for rows.Next() {
 		var site models.Site
 		var enabled int

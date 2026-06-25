@@ -9,8 +9,8 @@ export function useSites() {
     fetch('/api/sites')
       .then((res) => res.json())
       .then((data: Site[]) => {
-        setSites(data)
-        const enabled = data.filter((s) => s.enabled).map((s) => s.id)
+        setSites(data || [])
+        const enabled = (data || []).filter((s) => s.enabled).map((s) => s.id)
         setSelectedSites(new Set(enabled))
       })
       .catch((err) => {

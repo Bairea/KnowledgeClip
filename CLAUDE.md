@@ -156,6 +156,14 @@ WebSocket 消息协议与 `internal/api/websocket.go` 的 `MessageUpdate` 严格
   - Kimi: `div.chat-input-editor`（contenteditable）+ `div.send-button-container`
   - DeepSeek: 保留合理猜测（需登录后验证）
 
+### 2026-06-25 修复 nil slice 导致前端崩溃
+- `internal/storage/session_store.go`：`GetSessions` 返回值初始化为 `[]models.Session{}` 而非 `nil`，避免 JSON 序列化为 `null`
+- `internal/storage/site_store.go`：`GetSites` 同理
+- `internal/storage/message_store.go`：`GetMessagesBySession` 同理
+- `web/src/hooks/useSites.ts`：`fetchSites` 回调加 `data || []` 防御
+- `web/src/components/HistoryPanel.tsx`：`fetchSessions` 回调加 `data || []` 防御
+- 根因：Go 的 `nil` slice 序列化为 JSON `null`，前端 `data.length` 报 `TypeError: Cannot read properties of null`，React 崩溃后页面空白
+
 ### 2026-06-25 前端多轮对话与历史记录常驻
 - `web/src/types/index.ts`：`Message` 新增 `turn?: number`，新增 `Turn` 接口
 - `web/src/App.tsx`：

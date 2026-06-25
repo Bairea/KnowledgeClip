@@ -24,7 +24,7 @@ func GetMessagesBySession(db *DB, sessionID string) ([]models.Message, error) {
 	}
 	defer rows.Close()
 
-	var messages []models.Message
+	var messages []models.Message = []models.Message{}
 	for rows.Next() {
 		var msg models.Message
 		var kept int

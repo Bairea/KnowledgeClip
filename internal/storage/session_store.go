@@ -45,7 +45,7 @@ func GetSessions(db *DB) ([]models.Session, error) {
 	}
 	defer rows.Close()
 
-	var sessions []models.Session
+	var sessions []models.Session = []models.Session{}
 	for rows.Next() {
 		var session models.Session
 		if err := rows.Scan(&session.ID, &session.Prompt, &session.CreatedAt); err != nil {

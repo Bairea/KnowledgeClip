@@ -49,6 +49,73 @@ func SyncSites(db *DB, sites []models.Site) error {
 	return nil
 }
 
+func SaveSite(db *DB, site models.Site) error {
+	enabled := 0
+	if site.Enabled {
+		enabled = 1
+	}
+	_, err := db.Conn().Exec(`
+		INSERT INTO sites (id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			url = excluded.url,
+			engine_type = excluded.engine_type,
+			selectors = excluded.selectors,
+			cookie_file = excluded.cookie_file,
+			enabled = excluded.enabled,
+			format_prompt = excluded.format_prompt
+	`, site.ID, site.Name, site.URL, site.EngineType, site.Selectors, site.CookieFile, enabled, site.FormatPrompt)
+	if err != nil {
+		return fmt.Errorf("save site: %w", err)
+	}
+	return nil
+}
+
+func UpdateSite(db *DB, site models.Site) error {
+	enabled := 0
+	if site.Enabled {
+		enabled = 1
+	}
+	result, err := db.Conn().Exec(`
+		UPDATE sites SET
+			name = ?,
+			url = ?,
+			engine_type = ?,
+			selectors = ?,
+			cookie_file = ?,
+			enabled = ?,
+			format_prompt = ?
+		WHERE id = ?
+	`, site.Name, site.URL, site.EngineType, site.Selectors, site.CookieFile, enabled, site.FormatPrompt, site.ID)
+	if err != nil {
+		return fmt.Errorf("update site: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("site not found")
+	}
+	return nil
+}
+
+func DeleteSite(db *DB, id string) error {
+	result, err := db.Conn().Exec(`DELETE FROM sites WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete site: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("site not found")
+	}
+	return nil
+}
+
 func GetSites(db *DB) ([]models.Site, error) {
 	rows, err := db.Conn().Query(`
 		SELECT id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt, created_at

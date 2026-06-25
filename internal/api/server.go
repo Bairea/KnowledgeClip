@@ -21,6 +21,7 @@ func NewServer(db *storage.DB, manager *engine.Manager) *Server {
 
 	s := &Server{router: r, db: db, hub: NewHub(), manager: manager}
 	s.setupRoutes()
+	setupStatic(r)
 
 	return s
 }

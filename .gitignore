@@ -1,0 +1,5 @@
+# Dependencies
+web/node_modules
+
+# Build outputs
+web/dist

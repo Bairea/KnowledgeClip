@@ -143,6 +143,19 @@ WebSocket 消息协议与 `internal/api/websocket.go` 的 `MessageUpdate` 严格
   - 提供 `session_id` 时复用现有会话（多轮对话）
   - 仅新会话时调用 `ResetPages()`
 
+### 2026-06-25 修复 YAML 结构与 Chrome 路径
+- `configs/sites.yaml`：修复 YAML 结构，匹配 Go 结构体。原 YAML 使用 `engine_type` 和顶层 `selectors`，但 `SiteConfig` 期望 `engine.primary` 和 `engine.selectors`，导致解析出空值。同时添加 `enabled: true`。
+- `internal/engine/rod_engine.go`：
+  - 新增 `findChromeBinary()` 函数，检测系统 Chrome/Edge 路径，避免 rod 下载 Chromium
+  - 设置 `UserDataDir("./.browser-data")` 避免沙箱写入限制
+  - `typePrompt` JS 降级使用 React 兼容的 `nativeSetter` 设置 value
+  - 全流程 `log.Printf` 日志：page 创建/复用、元素查找、输入、提交、轮询
+- Qwen URL 从 `www.qianwen.com`（营销页）改为 `chat.qwen.ai`（聊天页）
+- 选择器通过浏览器实际检查 DOM 获取：
+  - Qwen: `textarea.message-input-textarea` + `div.message-input-right-button-send`
+  - Kimi: `div.chat-input-editor`（contenteditable）+ `div.send-button-container`
+  - DeepSeek: 保留合理猜测（需登录后验证）
+
 ### 2026-06-25 前端多轮对话与历史记录常驻
 - `web/src/types/index.ts`：`Message` 新增 `turn?: number`，新增 `Turn` 接口
 - `web/src/App.tsx`：

@@ -2,6 +2,7 @@ package api
 
 import (
 	"chat-aggregator/internal/config"
+	"chat-aggregator/internal/engine"
 	"chat-aggregator/internal/models"
 	"chat-aggregator/internal/storage"
 	"encoding/json"
@@ -150,6 +151,22 @@ func (s *Server) handleDeleteSite(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+func (s *Server) handleDetectSelectors(c *gin.Context) {
+	url := c.Query("url")
+	if url == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "url is required"})
+		return
+	}
+
+	result, err := engine.DetectSelectors(url)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 func (s *Server) syncConfigToYAML() error {

@@ -37,6 +37,9 @@ func (s *Server) handleChat(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[chat] request: prompt=%q site_ids=%v session_id=%s",
+		req.Prompt[:min(50, len(req.Prompt))], req.SiteIDs, req.SessionID)
+
 	sites, err := storage.GetSites(s.db)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -93,7 +96,7 @@ func (s *Server) handleChat(c *gin.Context) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("chat goroutine panic: site=%s err=%v", site.ID, r)
+					log.Printf("[chat] goroutine panic: site=%s err=%v", site.ID, r)
 					s.hub.Broadcast(MessageUpdate{
 						Type:      "message",
 						SessionID: sessionID,
@@ -104,9 +107,11 @@ func (s *Server) handleChat(c *gin.Context) {
 				}
 			}()
 
+			log.Printf("[chat] sending to site=%s url=%s", site.ID, site.URL)
 			start := time.Now()
 			content, err := s.manager.SendMessage(context.Background(), site, req.Prompt)
 			elapsed := int(time.Since(start).Milliseconds())
+			log.Printf("[chat] site=%s done in %dms err=%v", site.ID, elapsed, err)
 
 			msgID := uuid.New().String()
 			errStr := ""

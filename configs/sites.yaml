@@ -1,23 +1,19 @@
+global:
+  server_port: 8080
+
 sites:
   - id: qwen
     name: Qwen
-    url: https://www.qianwen.com/
+    url: https://chat.qwen.ai/
     enabled: true
     engine:
       primary: cdp
       selectors:
-        input: "#chat-input"
-        submit: "#send-btn"
-        answer: ".message-content"
-        wait_for: ".message-content:last-child"
-    format_prompt: |
-      【回答格式要求】
-      1. 使用 Markdown 格式
-      2. 一级标题请从 ### 开始，不要使用 # 或 ##
-      3. 代码块请标注语言（如 ```python）
-      4. 数学公式使用 $...$ 或 $$...$$
-      5. 保持回答简洁，结构化
-    cookie_file: ""
+        input: "textarea.message-input-textarea"
+        submit: "div.message-input-right-button-send"
+        answer: "[class*=message-content]"
+        wait_for: "textarea.message-input-textarea"
+    format_prompt: ""
 
   - id: kimi
     name: Kimi
@@ -26,12 +22,11 @@ sites:
     engine:
       primary: cdp
       selectors:
-        input: "textarea"
-        submit: "button[type=submit]"
-        answer: ".answer-content"
-        wait_for: ".answer-content:last-child"
+        input: "div.chat-input-editor"
+        submit: "div.send-button-container"
+        answer: "[class*=answer]"
+        wait_for: "div.chat-input-editor"
     format_prompt: ""
-    cookie_file: ""
 
   - id: deepseek
     name: DeepSeek
@@ -40,20 +35,8 @@ sites:
     engine:
       primary: cdp
       selectors:
-        input: "#chat-input"
-        submit: "#send-button"
-        answer: ".message-bubble"
-        wait_for: ".message-bubble:last-child"
+        input: "textarea"
+        submit: "div[class*=send]"
+        answer: "[class*=message-content]"
+        wait_for: "textarea"
     format_prompt: ""
-    cookie_file: ""
-
-global:
-  format_prompt: |
-    【回答格式要求】
-    1. 使用 Markdown 格式
-    2. 一级标题请从 ### 开始，不要使用 # 或 ##
-    3. 代码块请标注语言
-    4. 数学公式使用 $...$ 或 $$...$$
-    5. 保持回答简洁，结构化
-  default_timeout: 120000
-  max_concurrent: 0

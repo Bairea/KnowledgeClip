@@ -3,3 +3,9 @@ web/node_modules
 
 # Build outputs
 web/dist
+
+# Browser data
+.browser-data/
+
+# Database
+data/chat.db

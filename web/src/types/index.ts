@@ -1,0 +1,19 @@
+export interface Site {
+  id: string
+  name: string
+  url: string
+  engine_type: string
+  enabled: boolean
+  format_prompt: string
+}
+
+export interface Message {
+  id: string
+  session_id: string
+  site_id: string
+  content: string
+  kept: boolean
+  error: string
+  elapsed_ms: number
+  created_at: string
+}

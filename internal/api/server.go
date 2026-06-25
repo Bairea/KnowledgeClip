@@ -1,6 +1,7 @@
 package api
 
 import (
+	"chat-aggregator/internal/engine"
 	"chat-aggregator/internal/storage"
 	"net/http"
 
@@ -8,16 +9,17 @@ import (
 )
 
 type Server struct {
-	router *gin.Engine
-	db     *storage.DB
-	hub    *Hub
+	router  *gin.Engine
+	db      *storage.DB
+	hub     *Hub
+	manager *engine.Manager
 }
 
-func NewServer(db *storage.DB) *Server {
+func NewServer(db *storage.DB, manager *engine.Manager) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 
-	s := &Server{router: r, db: db, hub: NewHub()}
+	s := &Server{router: r, db: db, hub: NewHub(), manager: manager}
 	s.setupRoutes()
 
 	return s

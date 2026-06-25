@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"chat-aggregator/internal/models"
+	"chat-aggregator/internal/storage"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
@@ -14,6 +15,7 @@ import (
 
 type RodEngine struct {
 	browser *rod.Browser
+	db      *storage.DB
 }
 
 type Selectors struct {
@@ -23,10 +25,31 @@ type Selectors struct {
 	WaitFor string `json:"wait_for"`
 }
 
-func NewRodEngine() *RodEngine {
+func NewRodEngine(db *storage.DB) *RodEngine {
 	u := launcher.New().Headless(false).Devtools(true).MustLaunch()
 	browser := rod.New().ControlURL(u).MustConnect()
-	return &RodEngine{browser: browser}
+	return &RodEngine{browser: browser, db: db}
+}
+
+func toNetworkCookieParam(c *proto.NetworkCookie) *proto.NetworkCookieParam {
+	p := &proto.NetworkCookieParam{
+		Name:         c.Name,
+		Value:        c.Value,
+		Domain:       c.Domain,
+		Path:         c.Path,
+		Expires:      c.Expires,
+		Secure:       c.Secure,
+		HTTPOnly:     c.HTTPOnly,
+		SameSite:     c.SameSite,
+		Priority:     c.Priority,
+		SameParty:    c.SameParty,
+		SourceScheme: c.SourceScheme,
+		PartitionKey: c.PartitionKey,
+	}
+	if c.SourcePort != 0 {
+		p.SourcePort = &c.SourcePort
+	}
+	return p
 }
 
 func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt string) (string, error) {
@@ -38,8 +61,22 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		return "", errors.New("missing required selectors")
 	}
 
-	page, err := re.browser.Page(proto.TargetCreateTarget{URL: site.URL})
+	page, err := re.browser.Page(proto.TargetCreateTarget{URL: ""})
 	if err != nil {
+		return "", err
+	}
+
+	if re.db != nil {
+		siteCookie, err := storage.GetSiteCookie(re.db, site.ID)
+		if err == nil && siteCookie != nil && siteCookie.Cookies != "" {
+			var cookies []*proto.NetworkCookieParam
+			if json.Unmarshal([]byte(siteCookie.Cookies), &cookies) == nil && len(cookies) > 0 {
+				_ = page.SetCookies(cookies)
+			}
+		}
+	}
+
+	if err := page.Navigate(site.URL); err != nil {
 		return "", err
 	}
 
@@ -65,6 +102,7 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		return "", err
 	}
 
+	var answer string
 	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -77,14 +115,36 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		if err == nil && len(els) > 0 {
 			text, err := els[0].Text()
 			if err == nil && text != "" {
-				return text, nil
+				answer = text
+				break
 			}
 		}
 
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	return "", errors.New("poll answer timeout")
+	if answer == "" {
+		return "", errors.New("poll answer timeout")
+	}
+
+	if re.db != nil {
+		cookies, err := page.Cookies(nil)
+		if err == nil && len(cookies) > 0 {
+			params := make([]*proto.NetworkCookieParam, len(cookies))
+			for i, c := range cookies {
+				params[i] = toNetworkCookieParam(c)
+			}
+			cookieData, marshalErr := json.Marshal(params)
+			if marshalErr == nil {
+				_ = storage.SaveSiteCookie(re.db, models.SiteCookie{
+					SiteID:  site.ID,
+					Cookies: string(cookieData),
+				})
+			}
+		}
+	}
+
+	return answer, nil
 }
 
 func (re *RodEngine) Close() error {

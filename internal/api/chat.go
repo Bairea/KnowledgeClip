@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"chat-aggregator/internal/engine"
 	"chat-aggregator/internal/models"
 	"chat-aggregator/internal/storage"
 
@@ -75,11 +74,8 @@ func (s *Server) handleChat(c *gin.Context) {
 		go func(site models.Site) {
 			defer wg.Done()
 
-			manager := engine.NewManager()
-			defer manager.Close()
-
 			start := time.Now()
-			content, err := manager.SendMessage(context.Background(), site, req.Prompt)
+			content, err := s.manager.SendMessage(context.Background(), site, req.Prompt)
 			elapsed := int(time.Since(start).Milliseconds())
 
 			msgID := uuid.New().String()
@@ -94,16 +90,16 @@ func (s *Server) handleChat(c *gin.Context) {
 			}
 
 			update := MessageUpdate{
-			Type:      "message",
-			SessionID: sessionID,
-			MessageID: msgID,
-			SiteID:    site.ID,
-			Content:   content,
-			Error:     errStr,
-			ElapsedMs: elapsed,
-			Done:      true,
-		}
-		s.hub.Broadcast(update)
+				Type:      "message",
+				SessionID: sessionID,
+				MessageID: msgID,
+				SiteID:    site.ID,
+				Content:   content,
+				Error:     errStr,
+				ElapsedMs: elapsed,
+				Done:      true,
+			}
+			s.hub.Broadcast(update)
 		}(site)
 	}
 

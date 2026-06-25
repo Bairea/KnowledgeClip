@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"chat-aggregator/internal/models"
+	"chat-aggregator/internal/storage"
 )
 
 type BrowserEngine interface {
@@ -17,17 +18,17 @@ type Manager struct {
 	engines []BrowserEngine
 }
 
-func NewManager() *Manager {
+func NewManager(db *storage.DB) *Manager {
 	return &Manager{
-		engines: getEngines(),
+		engines: getEngines(db),
 	}
 }
 
-func getEngines() []BrowserEngine {
+func getEngines(db *storage.DB) []BrowserEngine {
 	var engines []BrowserEngine
 	var errs []error
 
-	re := NewRodEngine()
+	re := NewRodEngine(db)
 	engines = append(engines, re)
 
 	pwe, err := NewPlaywrightGoEngine()

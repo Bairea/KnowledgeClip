@@ -3,6 +3,7 @@ package main
 import (
 	"chat-aggregator/internal/api"
 	"chat-aggregator/internal/config"
+	"chat-aggregator/internal/engine"
 	"chat-aggregator/internal/storage"
 	"log"
 )
@@ -24,7 +25,10 @@ func main() {
 		log.Fatalf("sync sites: %v", err)
 	}
 
-	server := api.NewServer(db)
+	manager := engine.NewManager(db)
+	defer manager.Close()
+
+	server := api.NewServer(db, manager)
 	if err := server.Run(":8080"); err != nil {
 		log.Fatalf("run server: %v", err)
 	}

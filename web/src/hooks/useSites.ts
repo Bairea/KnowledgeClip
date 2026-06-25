@@ -5,7 +5,7 @@ export function useSites() {
   const [sites, setSites] = useState<Site[]>([])
   const [selectedSites, setSelectedSites] = useState<Set<string>>(new Set())
 
-  useEffect(() => {
+  const fetchSites = useCallback(() => {
     fetch('/api/sites')
       .then((res) => res.json())
       .then((data: Site[]) => {
@@ -17,6 +17,10 @@ export function useSites() {
         console.error('Failed to fetch sites:', err)
       })
   }, [])
+
+  useEffect(() => {
+    fetchSites()
+  }, [fetchSites])
 
   const toggleSite = useCallback((id: string) => {
     setSelectedSites((prev) => {
@@ -30,5 +34,5 @@ export function useSites() {
     })
   }, [])
 
-  return { sites, selectedSites, toggleSite }
+  return { sites, selectedSites, toggleSite, fetchSites }
 }

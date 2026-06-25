@@ -5,7 +5,17 @@ import SiteSidebar from './components/SiteSidebar'
 import ChatGrid from './components/ChatGrid'
 import InputArea from './components/InputArea'
 import ExportPanel from './components/ExportPanel'
-import type { Message } from './types'
+import SiteConfigModal from './components/SiteConfigModal'
+import type { Message, Site } from './types'
+
+interface SiteFormData {
+  id: string
+  name: string
+  url: string
+  engine_type: string
+  selectors: string
+  format_prompt: string
+}
 
 interface ChatResponse {
   session_id: string
@@ -28,10 +38,12 @@ interface UpdateKeptPayload {
 }
 
 export default function App() {
-  const { sites, selectedSites, toggleSite } = useSites()
+  const { sites, selectedSites, toggleSite, fetchSites } = useSites()
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [showConfig, setShowConfig] = useState(false)
+  const [editingSite, setEditingSite] = useState<SiteFormData | null>(null)
 
   useWebSocket((msg: WSMessage) => {
     if (msg.type === 'message' && msg.site_id) {
@@ -158,17 +170,73 @@ export default function App() {
     [messages],
   )
 
+  const openNewSite = useCallback(() => {
+    setEditingSite(null)
+    setShowConfig(true)
+  }, [])
+
+  const openEditSite = useCallback((site: Site) => {
+    setEditingSite({
+      id: site.id,
+      name: site.name,
+      url: site.url,
+      engine_type: site.engine_type,
+      selectors: '',
+      format_prompt: site.format_prompt || '',
+    })
+    setShowConfig(true)
+  }, [])
+
+  const closeConfig = useCallback(() => {
+    setShowConfig(false)
+    setEditingSite(null)
+  }, [])
+
+  const handleSaveSite = useCallback(
+    async (formData: SiteFormData) => {
+      const isNew = !editingSite
+      const url = isNew ? '/api/sites' : `/api/sites/${formData.id}`
+      const method = isNew ? 'POST' : 'PUT'
+
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData),
+        })
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
+        closeConfig()
+        fetchSites()
+      } catch (err) {
+        console.error('Failed to save site:', err)
+      }
+    },
+    [editingSite, closeConfig, fetchSites],
+  )
+
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-white">
       <header className="flex items-center justify-between border-b border-slate-700 bg-slate-900 px-4 py-3">
         <span className="text-lg font-semibold">Chat Aggregator</span>
-        <ExportPanel sessionId={currentSessionId} />
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={openNewSite}
+            className="rounded-md bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
+          >
+            + New Site
+          </button>
+          <ExportPanel sessionId={currentSessionId} />
+        </div>
       </header>
       <div className="flex flex-1 overflow-hidden">
         <SiteSidebar
           sites={sites}
           selectedSites={selectedSites}
           toggleSite={toggleSite}
+          onEditSite={openEditSite}
         />
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex-1 overflow-auto">
@@ -181,6 +249,12 @@ export default function App() {
           <InputArea onSend={handleSend} disabled={isLoading} />
         </main>
       </div>
+      <SiteConfigModal
+        isOpen={showConfig}
+        editingSite={editingSite}
+        onClose={closeConfig}
+        onSave={handleSaveSite}
+      />
     </div>
   )
 }

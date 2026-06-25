@@ -1,11 +1,13 @@
 package api
 
 import (
-	"github.com/gin-gonic/gin"
+	"chat-aggregator/internal/storage"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
-func NewServer() {
+func NewServer(db *storage.DB) {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 

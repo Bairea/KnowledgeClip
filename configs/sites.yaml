@@ -1,0 +1,59 @@
+sites:
+  - id: qwen
+    name: Qwen
+    url: https://chat.qwen.ai
+    enabled: true
+    engine:
+      primary: cdp
+      selectors:
+        input: "#chat-input"
+        submit: "#send-btn"
+        answer: ".message-content"
+        wait_for: ".message-content:last-child"
+    format_prompt: |
+      【回答格式要求】
+      1. 使用 Markdown 格式
+      2. 一级标题请从 ### 开始，不要使用 # 或 ##
+      3. 代码块请标注语言（如 ```python）
+      4. 数学公式使用 $...$ 或 $$...$$
+      5. 保持回答简洁，结构化
+    cookie_file: ""
+
+  - id: kimi
+    name: Kimi
+    url: https://www.kimi.com/
+    enabled: true
+    engine:
+      primary: cdp
+      selectors:
+        input: "textarea"
+        submit: "button[type=submit]"
+        answer: ".answer-content"
+        wait_for: ".answer-content:last-child"
+    format_prompt: ""
+    cookie_file: ""
+
+  - id: deepseek
+    name: DeepSeek
+    url: https://chat.deepseek.com/
+    enabled: true
+    engine:
+      primary: cdp
+      selectors:
+        input: "#chat-input"
+        submit: "#send-button"
+        answer: ".message-bubble"
+        wait_for: ".message-bubble:last-child"
+    format_prompt: ""
+    cookie_file: ""
+
+global:
+  format_prompt: |
+    【回答格式要求】
+    1. 使用 Markdown 格式
+    2. 一级标题请从 ### 开始，不要使用 # 或 ##
+    3. 代码块请标注语言
+    4. 数学公式使用 $...$ 或 $$...$$
+    5. 保持回答简洁，结构化
+  default_timeout: 120000
+  max_concurrent: 0

@@ -3,7 +3,7 @@ package models
 import "time"
 
 type Site struct {
-	ID           int
+	ID           string
 	Name         string
 	URL          string
 	EngineType   string
@@ -15,15 +15,15 @@ type Site struct {
 }
 
 type Session struct {
-	ID        int
+	ID        string
 	Prompt    string
 	CreatedAt time.Time
 }
 
 type Message struct {
-	ID        int
-	SessionID int
-	SiteID    int
+	ID        string
+	SessionID string
+	SiteID    string
 	Content   string
 	Kept      bool
 	Error     string
@@ -32,7 +32,7 @@ type Message struct {
 }
 
 type SiteCookie struct {
-	SiteID       int
+	SiteID       string
 	Cookies      string
 	LocalStorage string
 	UpdatedAt    time.Time

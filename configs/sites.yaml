@@ -4,16 +4,16 @@ global:
 sites:
   - id: qwen
     name: Qwen
-    url: https://chat.qwen.ai/
+    url: https://www.qianwen.com/
     enabled: true
     engine:
       primary: cdp
       selectors:
-        input: "textarea.message-input-textarea"
-        submit: "div.message-input-right-button-send"
-        answer: "[class*=message-content]"
-        wait_for: "textarea.message-input-textarea"
-    format_prompt: ""
+        input: "[contenteditable=true]"
+        submit: "button[aria-label='发送消息']"
+        answer: "[class*=answer-common-card]"
+        wait_for: "[contenteditable=true]"
+    format_prompt: "请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。"
 
   - id: kimi
     name: Kimi
@@ -24,9 +24,9 @@ sites:
       selectors:
         input: "div.chat-input-editor"
         submit: "div.send-button-container"
-        answer: "[class*=answer]"
+        answer: "[class*=markdown]"
         wait_for: "div.chat-input-editor"
-    format_prompt: ""
+    format_prompt: "请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。"
 
   - id: deepseek
     name: DeepSeek
@@ -37,6 +37,6 @@ sites:
       selectors:
         input: "textarea"
         submit: "div[class*=send]"
-        answer: "[class*=message-content]"
+        answer: ".ds-assistant-message-main-content"
         wait_for: "textarea"
-    format_prompt: ""
+    format_prompt: "请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。"

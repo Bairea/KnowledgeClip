@@ -9,3 +9,13 @@ web/dist
 
 # Database
 data/chat.db
+data.db
+data.db-shm
+data.db-wal
+
+# Build binary
+bin/
+
+# OS
+Thumbs.db
+Desktop.ini

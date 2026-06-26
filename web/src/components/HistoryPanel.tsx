@@ -4,9 +4,10 @@ import type { Session } from '../types'
 interface HistoryPanelProps {
   onSelectSession: (sessionId: string) => void
   currentSessionId: string | null
+  refreshTrigger: number
 }
 
-export default function HistoryPanel({ onSelectSession, currentSessionId }: HistoryPanelProps) {
+export default function HistoryPanel({ onSelectSession, currentSessionId, refreshTrigger }: HistoryPanelProps) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -29,7 +30,7 @@ export default function HistoryPanel({ onSelectSession, currentSessionId }: Hist
       .finally(() => {
         setLoading(false)
       })
-  }, [])
+  }, [refreshTrigger])
 
   const truncate = (text: string, maxLen: number) => {
     if (text.length <= maxLen) return text

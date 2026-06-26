@@ -9,20 +9,19 @@ interface ChatGridProps {
 
 export default function ChatGrid({ messages, sites, onToggleKeep }: ChatGridProps) {
   const siteMap = new Map(sites.map((s) => [s.id, s.name]))
+  const count = messages.length
+
+  const cols = count <= 1 ? 'grid-cols-1' : count === 2 ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1 lg:grid-cols-3'
 
   return (
-    <div className="flex flex-wrap gap-4 overflow-auto p-4">
+    <div className={`grid ${cols} gap-3 p-3`}>
       {messages.map((msg) => (
-        <div
+        <MessageCard
           key={msg.id}
-          className="flex-1 min-w-[280px] max-w-full"
-        >
-          <MessageCard
-            message={msg}
-            siteName={siteMap.get(msg.site_id) || msg.site_id}
-            onToggleKeep={onToggleKeep}
-          />
-        </div>
+          message={msg}
+          siteName={siteMap.get(msg.site_id) || msg.site_id}
+          onToggleKeep={onToggleKeep}
+        />
       ))}
     </div>
   )

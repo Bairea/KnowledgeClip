@@ -5,7 +5,7 @@ interface ExportPanelProps {
 }
 
 export default function ExportPanel({ sessionId }: ExportPanelProps) {
-  const [filterKept, setFilterKept] = useState(true)
+  const [filterKept, setFilterKept] = useState(false)
 
   if (!sessionId) {
     return null
@@ -25,7 +25,7 @@ export default function ExportPanel({ sessionId }: ExportPanelProps) {
           onChange={(e) => setFilterKept(e.target.checked)}
           className="h-3 w-3"
         />
-        仅 keep
+        仅导出已保留
       </label>
       <button
         onClick={() => handleExport('json')}

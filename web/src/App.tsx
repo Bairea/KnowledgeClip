@@ -52,6 +52,7 @@ export default function App() {
   const [showConfig, setShowConfig] = useState(false)
   const [editingSite, setEditingSite] = useState<SiteFormData | null>(null)
   const [turns, setTurns] = useState<TurnInfo[]>([])
+  const [historyRefresh, setHistoryRefresh] = useState(0)
 
   const currentTurnRef = useRef(0)
 
@@ -118,6 +119,7 @@ export default function App() {
           prompt,
           site_ids: siteIds,
           session_id: currentSessionId || undefined,
+          turn: nextTurn,
         }),
       })
 
@@ -129,6 +131,7 @@ export default function App() {
       const data: ChatResponse = await res.json()
       if (!currentSessionId) {
         setCurrentSessionId(data.session_id)
+        setHistoryRefresh((v) => v + 1)
       }
       setIsLoading(true)
 
@@ -253,7 +256,7 @@ export default function App() {
         }
         const data = await res.json()
         const loadedMessages: Message[] = data.map((msg: Record<string, unknown>) => ({
-          id: `${msg.session_id}-${msg.site_id}`,
+          id: `${msg.session_id}-${msg.site_id}-${msg.turn || 0}`,
           message_id: String(msg.id || ''),
           session_id: String(msg.session_id || ''),
           site_id: String(msg.site_id || ''),
@@ -263,12 +266,34 @@ export default function App() {
           elapsed_ms: Number(msg.elapsed_ms || 0),
           created_at: String(msg.created_at || ''),
           loading: false,
+          turn: Number(msg.turn || 0),
         }))
+
+        const turnMap = new Map<number, { prompt: string; siteIds: string[] }>()
+        for (const msg of loadedMessages) {
+          const turn = msg.turn || 0
+          if (!turnMap.has(turn)) {
+            const prompt = typeof data.find((m: Record<string, unknown>) => Number(m.turn || 0) === turn)?.prompt === 'string'
+              ? String(data.find((m: Record<string, unknown>) => Number(m.turn || 0) === turn)?.prompt || '')
+              : ''
+            turnMap.set(turn, { prompt, siteIds: [] })
+          }
+          turnMap.get(turn)!.siteIds.push(msg.site_id)
+        }
+
+        const loadedTurns: TurnInfo[] = Array.from(turnMap.entries())
+          .sort((a, b) => a[0] - b[0])
+          .map(([turn, info]) => ({
+            turn,
+            prompt: info.prompt,
+            siteIds: info.siteIds,
+          }))
+
         setCurrentSessionId(sessionId)
         setMessages(loadedMessages)
         setIsLoading(false)
-        currentTurnRef.current = 0
-        setTurns([])
+        currentTurnRef.current = loadedTurns.length > 0 ? loadedTurns[loadedTurns.length - 1].turn : 0
+        setTurns(loadedTurns)
       } catch (err) {
         console.error('Failed to load session messages:', err)
       }
@@ -310,6 +335,7 @@ export default function App() {
         <HistoryPanel
           onSelectSession={handleSelectSession}
           currentSessionId={currentSessionId}
+          refreshTrigger={historyRefresh}
         />
         <SiteSidebar
           sites={sites}

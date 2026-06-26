@@ -13,6 +13,8 @@ sites:
         submit: "button[aria-label='发送消息']"
         answer: "[class*=answer-common-card]"
         wait_for: "[contenteditable=true]"
+        copy_button: ""
+        content_strategy: "clipboard"
     format_prompt: "请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。"
 
   - id: kimi
@@ -26,6 +28,8 @@ sites:
         submit: "div.send-button-container"
         answer: "[class*=markdown]"
         wait_for: "div.chat-input-editor"
+        copy_button: ""
+        content_strategy: "clipboard"
     format_prompt: "请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。"
 
   - id: deepseek
@@ -39,4 +43,6 @@ sites:
         submit: "div[class*=send]"
         answer: ".ds-assistant-message-main-content"
         wait_for: "textarea"
+        copy_button: ""
+        content_strategy: "clipboard"
     format_prompt: "请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。"

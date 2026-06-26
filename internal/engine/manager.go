@@ -21,6 +21,10 @@ type PageResetter interface {
 	ResetPages()
 }
 
+type NewChatStarter interface {
+	StartNewChat(site models.Site) error
+}
+
 type Manager struct {
 	engines []BrowserEngine
 	locks   sync.Map
@@ -70,6 +74,26 @@ func (m *Manager) SendMessage(ctx context.Context, site models.Site, prompt stri
 	}
 
 	return "", fmt.Errorf("all engines failed: %w", errors.Join(errs...))
+}
+
+func (m *Manager) StartNewChat(sites []models.Site) {
+	var wg sync.WaitGroup
+	for _, site := range sites {
+		wg.Add(1)
+		go func(site models.Site) {
+			defer wg.Done()
+			for _, eng := range m.engines {
+				if ncs, ok := eng.(NewChatStarter); ok {
+					if err := ncs.StartNewChat(site); err != nil {
+						log.Printf("[manager] start new chat failed for site %s: %v", site.ID, err)
+					}
+					break
+				}
+			}
+		}(site)
+	}
+	wg.Wait()
+	log.Printf("[manager] start new chat completed for %d sites", len(sites))
 }
 
 func (m *Manager) ResetPages() {

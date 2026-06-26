@@ -28,6 +28,8 @@ type Message struct {
 	Kept      bool      `json:"kept"`
 	Error     string    `json:"error"`
 	ElapsedMs int       `json:"elapsed_ms"`
+	Turn      int       `json:"turn"`
+	Prompt    string    `json:"prompt"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

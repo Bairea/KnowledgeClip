@@ -17,6 +17,9 @@ func NewDB(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
+	conn.Exec("PRAGMA journal_mode = WAL")
+	conn.Exec("PRAGMA busy_timeout = 5000")
+
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
@@ -63,6 +66,14 @@ CREATE TABLE IF NOT EXISTS site_cookies (
 `
 	if _, err := conn.Exec(schema); err != nil {
 		return nil, fmt.Errorf("run schema: %w", err)
+	}
+
+	migrations := []string{
+		"ALTER TABLE messages ADD COLUMN turn INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE messages ADD COLUMN prompt TEXT NOT NULL DEFAULT ''",
+	}
+	for _, m := range migrations {
+		conn.Exec(m)
 	}
 
 	return &DB{db: conn}, nil

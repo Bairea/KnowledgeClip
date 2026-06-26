@@ -81,5 +81,10 @@ func (s *Server) handleExport(c *gin.Context) {
 	}
 
 	md := export.ToMarkdown(*session, messages, sites)
+
+	timestamp := time.Now().Format("20060102_150405")
+	filename := "export_" + timestamp + ".md"
+	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	c.Header("Content-Type", "text/markdown; charset=utf-8")
 	c.String(http.StatusOK, md)
 }

@@ -73,7 +73,7 @@ func countHeadingLevel(line string) int {
 			break
 		}
 	}
-	if count > 0 && count < len(line) && line[count] == ' ' {
+	if count > 0 && count <= 6 && count < len(line) && line[count] == ' ' {
 		return count
 	}
 	return 0

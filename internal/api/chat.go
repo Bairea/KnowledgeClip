@@ -19,6 +19,7 @@ type ChatRequest struct {
 	Prompt    string   `json:"prompt" binding:"required"`
 	SiteIDs   []string `json:"site_ids"`
 	SessionID string   `json:"session_id"`
+	Turn      int      `json:"turn"`
 }
 
 type ChatResponse struct {
@@ -86,7 +87,7 @@ func (s *Server) handleChat(c *gin.Context) {
 	c.JSON(http.StatusOK, ChatResponse{SessionID: sessionID})
 
 	if isNewSession {
-		s.manager.ResetPages()
+		s.manager.StartNewChat(targetSites)
 	}
 
 	var wg sync.WaitGroup
@@ -109,7 +110,11 @@ func (s *Server) handleChat(c *gin.Context) {
 
 			log.Printf("[chat] sending to site=%s url=%s", site.ID, site.URL)
 			start := time.Now()
-			content, err := s.manager.SendMessage(context.Background(), site, req.Prompt)
+			actualPrompt := req.Prompt
+			if site.FormatPrompt != "" {
+				actualPrompt = req.Prompt + "\n\n" + site.FormatPrompt
+			}
+			content, err := s.manager.SendMessage(context.Background(), site, actualPrompt)
 			elapsed := int(time.Since(start).Milliseconds())
 			log.Printf("[chat] site=%s done in %dms err=%v", site.ID, elapsed, err)
 
@@ -120,7 +125,7 @@ func (s *Server) handleChat(c *gin.Context) {
 				content = ""
 			}
 
-			if dbErr := storage.CreateMessage(s.db, msgID, sessionID, site.ID, content, errStr, elapsed); dbErr != nil {
+			if dbErr := storage.CreateMessage(s.db, msgID, sessionID, site.ID, content, errStr, elapsed, req.Turn, req.Prompt); dbErr != nil {
 				log.Printf("create message: site=%s err=%v", site.ID, dbErr)
 			}
 

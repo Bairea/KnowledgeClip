@@ -5,12 +5,13 @@ interface SiteSidebarProps {
   selectedSites: Set<string>
   toggleSite: (id: string) => void
   onEditSite: (site: Site) => void
+  width: number
 }
 
-export default function SiteSidebar({ sites, selectedSites, toggleSite, onEditSite }: SiteSidebarProps) {
+export default function SiteSidebar({ sites, selectedSites, toggleSite, onEditSite, width }: SiteSidebarProps) {
   return (
-    <aside className="flex w-56 flex-col border-r border-slate-700 bg-slate-900">
-      <div className="border-b border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200">
+    <aside className="flex flex-col border-r border-slate-700 bg-slate-900" style={{ width: `${width}px` }}>
+      <div className="flex h-12 items-center border-b border-slate-700 px-4 text-sm font-semibold text-slate-200">
         站点
       </div>
       <div className="flex-1 overflow-auto p-2">
@@ -30,9 +31,10 @@ export default function SiteSidebar({ sites, selectedSites, toggleSite, onEditSi
               />
               <button
                 type="button"
-                disabled={disabled}
                 onClick={() => onEditSite(site)}
-                className="flex-1 text-left text-sm text-slate-300 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:text-slate-600"
+                className={`flex-1 cursor-pointer text-left text-sm hover:text-white ${
+                  disabled ? 'text-slate-500' : 'text-slate-300'
+                }`}
               >
                 {site.name}
               </button>

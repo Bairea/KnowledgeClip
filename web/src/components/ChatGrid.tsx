@@ -11,10 +11,15 @@ export default function ChatGrid({ messages, sites, onToggleKeep }: ChatGridProp
   const siteMap = new Map(sites.map((s) => [s.id, s.name]))
   const count = messages.length
 
-  const cols = count <= 1 ? 'grid-cols-1' : count === 2 ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1 lg:grid-cols-3'
+  const gridStyle = {
+    display: 'grid',
+    gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))`,
+    gap: '0.75rem',
+    padding: '0.75rem',
+  }
 
   return (
-    <div className={`grid ${cols} gap-3 p-3`}>
+    <div style={gridStyle}>
       {messages.map((msg) => (
         <MessageCard
           key={msg.id}

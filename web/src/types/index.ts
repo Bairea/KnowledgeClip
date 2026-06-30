@@ -4,6 +4,7 @@ export interface Site {
   url: string
   engine_type: string
   enabled: boolean
+  selectors: string
   format_prompt: string
 }
 

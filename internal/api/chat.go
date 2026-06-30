@@ -86,10 +86,6 @@ func (s *Server) handleChat(c *gin.Context) {
 
 	c.JSON(http.StatusOK, ChatResponse{SessionID: sessionID})
 
-	if isNewSession {
-		s.manager.StartNewChat(targetSites)
-	}
-
 	var wg sync.WaitGroup
 	for _, site := range targetSites {
 		wg.Add(1)
@@ -107,6 +103,10 @@ func (s *Server) handleChat(c *gin.Context) {
 					})
 				}
 			}()
+
+			if isNewSession {
+				s.manager.StartNewChat([]models.Site{site})
+			}
 
 			log.Printf("[chat] sending to site=%s url=%s", site.ID, site.URL)
 			start := time.Now()
@@ -150,6 +150,15 @@ func (s *Server) handleChat(c *gin.Context) {
 			Done:      true,
 		})
 	}()
+}
+
+func (s *Server) handleDeleteSession(c *gin.Context) {
+	sessionID := c.Param("id")
+	if err := storage.DeleteSession(s.db, sessionID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (s *Server) handleGetSessions(c *gin.Context) {

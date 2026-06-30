@@ -19,15 +19,20 @@ type MessageUpdate struct {
 	Done      bool   `json:"done"`
 }
 
+type clientEntry struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
 type Hub struct {
-	clients map[*websocket.Conn]bool
-	mu      sync.RWMutex
+	clients  map[*websocket.Conn]*clientEntry
+	mu       sync.RWMutex
 	upgrader websocket.Upgrader
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[*websocket.Conn]bool),
+		clients: make(map[*websocket.Conn]*clientEntry),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true
@@ -39,37 +44,42 @@ func NewHub() *Hub {
 func (h *Hub) Add(conn *websocket.Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.clients[conn] = true
+	h.clients[conn] = &clientEntry{conn: conn}
 }
 
 func (h *Hub) Remove(conn *websocket.Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.clients, conn)
-	conn.Close()
+	if _, ok := h.clients[conn]; ok {
+		conn.Close()
+		delete(h.clients, conn)
+	}
 }
 
 func (h *Hub) Broadcast(msg MessageUpdate) {
 	h.mu.RLock()
-	conns := make([]*websocket.Conn, 0, len(h.clients))
-	for conn := range h.clients {
-		conns = append(conns, conn)
+	entries := make([]*clientEntry, 0, len(h.clients))
+	for _, entry := range h.clients {
+		entries = append(entries, entry)
 	}
 	h.mu.RUnlock()
 
-	var failed []*websocket.Conn
-	for _, conn := range conns {
-		if err := conn.WriteJSON(msg); err != nil {
-			failed = append(failed, conn)
+	var failed []*clientEntry
+	for _, entry := range entries {
+		entry.mu.Lock()
+		err := entry.conn.WriteJSON(msg)
+		entry.mu.Unlock()
+		if err != nil {
+			failed = append(failed, entry)
 		}
 	}
 
 	if len(failed) > 0 {
 		h.mu.Lock()
-		for _, conn := range failed {
-			if _, ok := h.clients[conn]; ok {
-				conn.Close()
-				delete(h.clients, conn)
+		for _, entry := range failed {
+			if _, ok := h.clients[entry.conn]; ok {
+				entry.conn.Close()
+				delete(h.clients, entry.conn)
 			}
 		}
 		h.mu.Unlock()

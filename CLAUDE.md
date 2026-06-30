@@ -331,6 +331,158 @@ WebSocket 消息协议与 `internal/api/websocket.go` 的 `MessageUpdate` 严格
   - `StartNewChat` 成功路径增加 `page.WaitIdle(5s)` 等待页面加载完成再重新注入 mocks，修复 Kimi 新建对话后答案不渲染导致 120s 超时
 - `configs/sites.yaml`：三站点均添加 `copy_button: ""` 和 `content_strategy: "clipboard"`
 
+### 2026-06-29 修复 New Site 保存与历史记录管理
+
+根因：(1) 前端 `SiteConfigModal` 的 `selectors` 字段是 JSON 字符串（textarea 内容），但后端 `CreateSiteRequest.Selectors` 期望 `map[string]string`，`ShouldBindJSON` 反序列化失败返回 400，前端仅 `console.error` 无用户可见反馈；(2) 后端 `handleCreateSite`/`handleUpdateSite` 硬性要求 `input`/`submit`/`answer` 选择器非空，新站点无法保存；(3) `openEditSite` 未加载已有 selectors（设为空字符串），且 `Site` 类型缺少 `selectors` 字段；(4) `SiteSidebar` 对 `enabled=false` 的站点禁用编辑按钮，导致未配置站点无法点击编辑；(5) 历史记录面板无收起/删除功能，后端无 `DELETE /api/sessions/:id` 端点。
+
+- `internal/api/sites.go`：
+  - **`handleCreateSite` 选择器改为可选**：移除 `input`/`submit`/`answer` 非空校验，改为 `enabled := req.Selectors["input"] != "" && req.Selectors["submit"] != "" && req.Selectors["answer"] != ""`，无选择器时站点保存为 `enabled=false`
+  - **`handleUpdateSite` 选择器改为可选**：移除非空校验，根据选择器完整性动态设置 `enabled`
+- `internal/storage/session_store.go`：
+  - **新增 `DeleteSession`**：事务内先删 `messages` 再删 `sessions`，`RowsAffected==0` 返回 `session not found`
+- `internal/api/chat.go`：
+  - **新增 `handleDeleteSession`**：`DELETE /api/sessions/:id`，调用 `storage.DeleteSession`
+- `internal/api/server.go`：注册 `DELETE /api/sessions/:id` 路由
+- `web/src/types/index.ts`：`Site` 接口新增 `selectors: string` 字段
+- `web/src/App.tsx`：
+  - **`openEditSite` 加载已有 selectors**：`selectors: site.selectors || ''` 替代空字符串
+  - **`handleSaveSite` 解析 selectors JSON**：`JSON.parse(formData.selectors)` 转为对象后发送，解析失败 `alert` 提示且不关闭弹窗；HTTP 错误 `alert` 展示后端错误信息
+  - **新增 `handleDeleteSession`**：调用 `DELETE /api/sessions/:id`，删除当前会话时触发 `handleNewChat`，刷新历史列表
+  - **新增 `historyCollapsed` 状态**：控制 HistoryPanel 收起/展开
+- `web/src/components/SiteConfigModal.tsx`：
+  - **`createEmptyForm` 提供默认 selectors 模板**：包含 `input`/`submit`/`answer`/`wait_for`/`copy_button`/`content_strategy` 六个字段的结构化 JSON
+- `web/src/components/SiteSidebar.tsx`：
+  - **编辑按钮始终可点击**：移除 `disabled={disabled}`，未配置站点可点击编辑添加选择器
+- `web/src/components/HistoryPanel.tsx`：
+  - **收起/展开功能**：`collapsed` 为 true 时渲染 40px 窄条 + 右箭头展开按钮；展开时标题栏显示左箭头收起按钮
+  - **单条删除按钮**：每条记录右侧显示垃圾桶图标（`opacity-40` 常驻可见，hover 高亮），点击触发 `window.confirm` 确认后调用 `onDeleteSession`
+
+### 2026-06-29 修复登录态复用、WebSocket 崩溃与表单简化
+
+根因：(1) `NewRodEngine` 使用 `UserDataDir("./.browser-data")` 独立配置文件，无法访问用户 Chrome 的登录态；Chrome 的远程调试不允许使用默认配置目录，直接用 `--user-data-dir` 指向真实配置会报 `DevTools remote debugging requires a non-default data directory`；(2) `Hub.Broadcast` 用 `RLock` 并发读取连接列表后，多个 goroutine 同时对同一连接调用 `WriteJSON`，gorilla/websocket 不支持并发写入 → `panic: concurrent write to websocket connection`，服务器崩溃；(3) 新增站点表单显示 6 个字段（ID/名称/链接/引擎类型/Selectors JSON/Format Prompt），用户体验差；(4) `handleSubmit` 中 `handleDetect` 通过 `setFormData` 异步更新 selectors，但 `onSave(formData)` 立即使用了旧状态，导致保存的 selectors 为空。
+
+- `internal/engine/rod_engine.go`：
+  - **新增 `getChromeUserDataDir()`**：检测 `C:\Users\<user>\AppData\Local\Google\Chrome\User Data` 和 Edge 对应路径
+  - **新增 `syncChromeProfile(targetDir)`**：首次运行时（`./.browser-data/Local State` 不存在）从用户 Chrome 配置复制 `Local State`（含加密密钥）、`Default/Network/Cookies`（或 `Default/Cookies`）、`Default/Login Data` 到 `./.browser-data`，复用用户 Chrome 的登录态
+  - **新增 `copyFile`/`isChromeRunning` 辅助函数**
+  - `NewRodEngine` 改为：先检查 `./.browser-data` 是否已有 `Local State`，没有则触发 `syncChromeProfile`，然后用 `./.browser-data` 启动
+  - 新增 `os/exec` 和 `path/filepath` import（用于 tasklist 检测和路径拼接）
+- `internal/api/websocket.go`：
+  - **引入 `clientEntry` 结构**：每个连接关联一个 `sync.Mutex`，`WriteJSON` 前加锁，解决并发写入 panic
+  - `Hub.Broadcast` 改为两阶段：先 `RLock` 收集所有 `clientEntry` 快照，再逐个加锁写入，失败的连接在第二阶段统一清理
+  - `Hub.Add`/`Hub.Remove` 改为操作 `map[*websocket.Conn]*clientEntry`
+- `web/src/components/SiteConfigModal.tsx`：
+  - **表单简化为 2 个字段**：默认只显示「名称」和「链接」，ID/引擎类型/Selectors/Format Prompt 收纳到「▶ 高级设置」折叠区
+  - **ID 自动生成**：输入名称时 `slugify(name)` 自动填充 ID（中文保留，非字母数字转为 `-`）
+  - **保存时自动检测**：`handleSubmit` 中 `!isEditing && !autoDetected` 时先调用 `handleDetect()`，成功后用返回的 selectors 字符串直接传给 `onSave`（不依赖 `setFormData` 异步更新），解决 selectors 为空的 bug
+  - **`handleDetect` 返回 `string | null`**：返回检测到的 selectors JSON 字符串，调用方可直接使用
+  - 默认 `format_prompt` 预填标准 Markdown 格式约束
+
+## 开发与验证约定
+
+### 2026-06-29 重构 Auto Detect 检测器与历史记录批量管理
+
+根因：(1) `detector.go` 用 `launcher.New()` 尝试下载 Chromium 而非系统 Chrome，与主引擎环境不一致；(2) 检测器候选选择器太少（3 个 submit、4 个 answer），对现代 SPA 站点不够；(3) `gson.JSON.Str()` 对 null 值返回字面量字符串 `"<nil>"` 而非空字符串，导致 null 值未被过滤，API 返回 `{"answer":"<nil>"}` 这样的脏数据；(4) `enabled` 逻辑要求 input+submit+answer 三者齐全，但 rod 引擎对 submit（近邻按钮搜索 + Enter 回退）和 answer（新元素检测）均有降级，只需 input 即可工作；(5) 历史记录逐条删除按钮繁琐，用户体验差。
+
+- `internal/engine/detector.go`：
+  - **使用系统 Chrome**：调用 `findChromeBinary()` 复用 rod 引擎的 Chrome 路径，避免下载 Chromium
+  - **扩展候选选择器**：input 14 个候选、submit 17 个候选、answer 16 个候选、copy_button 5 个候选
+  - **近邻按钮搜索**：submit 未匹配时，从 input 元素父级向上遍历 4 层，查找 `button/[role=button]/div[class*=icon]/div[class*=btn]`，排除 toggle/settings/menu/upload/file 按钮，按 X 坐标降序选最右侧（发送按钮通常在最右）
+  - **过滤 `<nil>` 字符串**：`gson.JSON.Str()` 对 null 返回 `"<nil>"`，增加 `s != "<nil>"` 过滤
+  - **wait_for 自动推导**：answer 非空时自动设为 `answer + ":last-child"`
+- `internal/api/sites.go`：
+  - **enabled 逻辑放宽**：`handleCreateSite` 和 `handleUpdateSite` 改为 `enabled = req.Selectors["input"] != ""`，只需 input 选择器即可启用站点
+- `web/src/components/SiteConfigModal.tsx`：
+  - **默认 format_prompt**：新建站点时预填 `请使用标准Markdown格式回答，标题从第三层级（###）开始...`，与其他站点一致
+- `web/src/components/HistoryPanel.tsx`：
+  - **移除逐条删除按钮**：不再每条记录显示垃圾桶图标
+  - **管理按钮 + 批量选择模式**：标题栏新增"管理"按钮，点击后进入批量模式：每条记录显示复选框，底部工具栏显示"全选"/"已选 N"/"删除"/"取消"，选择后点击删除批量删除
+  - **退出管理模式**：点击"取消"或删除完成后自动退出，清空选中状态
+- `web/src/App.tsx`：
+  - **`handleDeleteSession` 改为 `handleDeleteSessions`**：接收 `string[]` 批量删除，循环调用 DELETE API，删除当前会话时触发 `handleNewChat`
+
+### 2026-06-29 修复 context canceled 错误与 UI 布局问题
+
+根因：(1) `syncChromeProfile` 复制用户 Chrome 的 `Local State` 文件到 `.browser-data`，该文件包含指向用户 Chrome 配置目录的 profile 引用，在独立 `.browser-data` 中不存在对应 profile，导致 Chrome 启动后 CDP 连接不稳定/崩溃，所有 `page.Eval` 调用返回 `context canceled`；(2) `.browser-data` 目录中残留的 `lockfile`/`SingletonLock` 等锁文件阻止 Chrome 正常启动；(3) ChatGrid 使用固定 `grid-cols-3` 无法根据卡片数量动态调整列数；(4) InputArea 使用 `<input type="text">` 只支持单行输入；(5) App header / HistoryPanel header / SiteSidebar header 使用 `py-3` 内边距导致高度不一致。
+
+- `internal/engine/rod_engine.go`：
+  - **移除 `syncChromeProfile` 及相关函数**：删除 `syncChromeProfile`、`getChromeUserDataDir`、`isChromeRunning`、`copyFile`，以及 `io`/`os/exec`/`path/filepath` 导入
+  - **新增 `cleanupLockFiles`**：启动前删除 `.browser-data` 目录中的 `lockfile`/`SingletonLock`/`SingletonSocket`/`SingletonCookie`/`DevToolsActivePort`，防止残留锁文件阻止 Chrome 启动
+  - **新增 `ensureBrowser()` 方法**：`SendMessage` 开头调用，通过 `browser.Pages()` 检测浏览器连接状态，连接断开时自动清理锁文件并重新启动 Chrome；`browser == nil`（初始启动失败）时也尝试重新启动
+  - **`RodEngine` 结构体新增字段**：`controlURL string` 和 `userDataDir string`，用于重连时记录 Chrome 调试 URL 和用户数据目录
+  - **`NewRodEngine` 简化**：启动前调用 `cleanupLockFiles`，失败时返回 `browser=nil` 的引擎实例（由 `ensureBrowser` 延迟重试）
+  - **选择器检查放宽**：`SendMessage` 中从 `sels.Input == "" || sels.Answer == ""` 改为仅 `sels.Input == ""`
+- `web/src/components/InputArea.tsx`：
+  - **从 `<input>` 改为 `<textarea>`**：`rows={2}`，`resize-none`，`minHeight: 44px`，`maxHeight: 200px`
+  - **自动调整高度**：`useEffect` 监听 `prompt` 变化，`scrollHeight` 驱动高度（上限 200px）
+  - **Enter 发送 / Shift+Enter 换行**：`handleKeyDown` 拦截 Enter 键
+- `web/src/components/ChatGrid.tsx`：
+  - **动态等宽列**：从 Tailwind `grid-cols-1 lg:grid-cols-2 lg:grid-cols-3` 改为内联样式 `gridTemplateColumns: repeat(${count}, minmax(0, 1fr))`，按实际卡片数量等分宽度
+- `web/src/components/SiteSidebar.tsx`：
+  - **头部高度统一**：从 `px-4 py-3` 改为 `flex h-12 items-center px-4`
+- `web/src/components/HistoryPanel.tsx`：
+  - **头部高度统一**：从 `px-4 py-3` 改为 `flex h-12 items-center justify-between px-4`
+- `web/src/App.tsx`：
+  - **App header 高度统一**：从 `px-4 py-3` 改为 `flex h-12 items-center justify-between px-4`
+
+### 2026-06-29 修复 Google 登录阻止与实现可拖拽调整面板尺寸
+
+根因：(1) go-rod launcher 默认添加 `--enable-automation` 标志，Google 检测到 Chrome 被 CDP 控制后阻止登录（"Couldn't sign you in"）；(2) `navigator.webdriver` 为 `true` 也被 Google 检测为自动化浏览器；(3) 前端面板宽度/高度固定，用户无法调整 HistoryPanel、SiteSidebar 的列宽和 InputArea 的高度。
+
+- `internal/engine/rod_engine.go`：
+  - **新增 `createLauncher` 函数**：统一 launcher 配置，`Delete("enable-automation")` 移除自动化标志，`Delete("useAutomationExtension")` 移除扩展，`Set("disable-blink-features", "AutomationControlled")` 阻止 Blink 引擎的自动化检测
+  - **`ensureBrowser` 和 `NewRodEngine` 使用 `createLauncher`**：避免重复配置
+  - **注入 JS 覆盖自动化检测**：`navigator.webdriver` 设为 `undefined`，`navigator.languages` 设为 `['zh-CN', 'zh', 'en']`，`navigator.plugins` 设为非空数组，`window.chrome` 设为 `{runtime: {}}`，使 Chrome 表现为正常用户浏览器
+- `internal/engine/detector.go`：
+  - **同样移除自动化标志**：`Delete("enable-automation")` 和 `Set("disable-blink-features", "AutomationControlled")`
+- `web/src/components/ResizeHandle.tsx`（新增）：
+  - **通用拖拽调整组件**：支持 `horizontal`（列宽）和 `vertical`（行高）两个方向，mousedown 捕获初始位置，document mousemove 计算增量 delta，mouseup 释放；拖拽时设置 `document.body.style.cursor` 和 `userSelect: 'none'`；`data-resize-handle` 属性方便定位
+- `web/src/components/HistoryPanel.tsx`：
+  - **新增 `width` prop**：从 `w-64` 改为 `style={{ width: '${width}px' }}`
+- `web/src/components/SiteSidebar.tsx`：
+  - **新增 `width` prop**：从 `w-56` 改为 `style={{ width: '${width}px' }}`
+- `web/src/components/InputArea.tsx`：
+  - **新增 `height` prop**：form 使用 `style={{ height: '${height}px' }}`，textarea 使用 `style={{ height: '100%' }}` 填满
+  - 移除自动调整高度逻辑（改由拖拽控制）
+- `web/src/App.tsx`：
+  - **新增三个尺寸状态**：`historyWidth`（默认 256，范围 160-500）、`sidebarWidth`（默认 224，范围 150-400）、`inputHeight`（默认 80，范围 60-400）
+  - **三个 ResizeHandle**：HistoryPanel 右侧（horizontal）、SiteSidebar 右侧（horizontal）、InputArea 上方（vertical，delta 取反使向上拖增大高度）
+  - HistoryPanel 收起时隐藏对应的 resize handle
+
+### 2026-06-30 修复多站点输入、提交与回答获取问题
+
+根因：(1) Kimi 的 Lexical 编辑器 `typePromptLexical` 首次 `execCommand('insertText')` 部分插入文本后重试会叠加，导致文本重复；(2) MiniMax 的 ProseMirror 编辑器输入成功但 `button[class*=primary]` 找到的是错误按钮，通用提交搜索需要等待发送按钮启用；(3) Doubao 的 `[class*=markdown]` 选择器匹配 0 个元素，AI 回答在 `[class*=v_list_row]` 容器中；(4) ChatGPT 的 Cloudflare Turnstile 检测到 CDP 自动化，无限循环验证（无法修复）。
+
+- `internal/engine/rod_engine.go`：
+  - **`typePromptLexical` 完全重写**：改为 `async` 函数，使用 Lexical API `root.clear()` 替代 `execCommand('delete')` 清空编辑器，操作间加 `await setTimeout(150ms)` 延迟，重试也使用 `root.clear()` 清空后重新插入
+  - **通用提交搜索 2s 等待**：`generic submit button search` 前加 `time.Sleep(2s)` 等待发送按钮从 disabled 变为 enabled
+  - **空 Submit 时 JS click 回退**：`sels.Submit` 为空时使用通用搜索（从 input 父级向上遍历 8 层找按钮，排除 input 相关按钮，按 X 坐标降序选最右侧）
+  - **Enter/Ctrl+Enter 回退**：JS click 失败后依次尝试 Enter 和 Ctrl+Enter，均失败时输出按钮诊断日志（按距离 input 排序的 top 10 按钮）
+  - **轮询阶段 fallback 选择器自动切换**：`pollCount==10` 且 `currentCount==0` 时，依次尝试 28 个 fallback 选择器，找到可见元素则切换选择器并设置 `beforeCount=fbCount`、`beforeText=fbText`（避免用户消息被误判为新回答）
+  - **iframe 检测**：fallback 选择器均失败时检测可见 iframe 并输出诊断
+  - **pollCount==30 父容器诊断**：当 `currentCount <= beforeCount` 时输出所有含结构化内容（ul/ol/pre/table/blockquote/h1-h6）的父容器，按文本长度排序，输出 tag/class/textLen/children/pos/size/text
+  - **pollCount==30 叶子元素诊断**：同时输出所有非侧边栏/导航的叶子元素（无块级子元素），按 Y 坐标排序
+  - **诊断排除侧边栏**：所有诊断 JS 均过滤 `sidebar`/`w-sidebar`/`nav`/`menu` class 及其子元素
+- `configs/sites.yaml`：
+  - Doubao answer 选择器从 `[class*=markdown]` 改为 `[class*=v_list_row]`
+
+### 2026-06-30 修复 GLM 思考过程提取、Doubao 内容不全与 Chrome 重连
+
+根因：(1) GLM 的 `[class*=markdown]` 选择器同时匹配思考过程容器和正式回答容器，`getAnswerStatus` 和内容提取器未过滤思考过程元素；(2) Doubao 提交后 `postAnswerCount=0`（元素未加载），`beforeCount` 保持为 0 导致用户消息被包含在提取内容中；(3) Doubao 的 AI 回答在已有 `v_list_row` 元素中渲染（count 不变），`getAnswerStatus` 的 fallback 逻辑返回所有元素中最长文本（可能是旧消息），无法检测到新回答；(4) pollCount==30 的 fallback 选择器切换过于激进，在 AI 尚未响应时就切换到错误选择器；(5) 手动关闭 Chrome 后 `browser.Pages()` 调用永久阻塞，导致所有后续请求失败。
+
+- `internal/engine/rod_engine.go`：
+  - **`getAnswerStatus` 新增 `isInThinking` 过滤**：3 层祖先检查 + 特定 class 模式（`think-block`/`think-content`/`think_process`/`thinking-block`/`thinking-content`/`reasoning-block`/`reasoning-content`/`thought-block`），过滤后无文本则 fallback 到原始行为
+  - **`getAnswerStatus` `startIdx >= els.length` 分支**：当 `beforeCount >= 元素总数` 时，检查最后一个元素（AI 回答所在）而非所有元素中最长文本，解决 Doubao 同 count 场景下无法检测新回答的问题
+  - **post-submit 诊断重试**：`postAnswerCount <= beforeCount` 时等待 3 秒重新检查，允许页面元素加载完成后再更新 `beforeCount`
+  - **pollCount==30 fallback 条件收紧**：从 `currentCount <= beforeCount` 改为 `currentCount < beforeCount || (currentCount == 0 && beforeCount == 0)`，避免 AI 尚未响应时误触发选择器切换
+  - **pollCount==30 fallback `beforeCount` 修复**：切换选择器时设置 `beforeCount = fbTotal`（总元素数）而非 0，并要求 `fbText > 200` 字符，避免提取到用户消息
+  - **`beforeCount == 0` 时 prompt 剥离安全网**：若提取内容以用户 prompt 开头，JS 查找不含 prompt 的元素索引并重新提取
+- `internal/engine/content_extractor.go`：
+  - **`ClipboardExtractor` 新增 `isInThinking`**：跳过思考区域内的复制按钮，过滤 `answerEls` 排除思考元素
+  - **`ClipboardExtractor` click 错误处理**：`try { el.click() } catch { dispatchEvent }` 防止非函数元素报错
+  - **`HtmlToMarkdownExtractor` `isInThinking` 收紧**：从 10 层 + 宽泛模式改为 3 层 + 特定模式，避免误过滤正式回答
+  - **`HtmlToMarkdownExtractor` innerText fallback UI 标签过滤**：raw innerText 使用前正则移除独立成行的 UI 标签（python/运行/copy/复制等 40+ 标签）
+
 ## 开发与验证约定
 
 每次修改代码后，必须按以下顺序执行编译与运行：

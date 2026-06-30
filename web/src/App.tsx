@@ -7,6 +7,7 @@ import InputArea from './components/InputArea'
 import ExportPanel from './components/ExportPanel'
 import SiteConfigModal from './components/SiteConfigModal'
 import HistoryPanel from './components/HistoryPanel'
+import ResizeHandle from './components/ResizeHandle'
 import type { Message, Site } from './types'
 
 interface SiteFormData {
@@ -53,6 +54,10 @@ export default function App() {
   const [editingSite, setEditingSite] = useState<SiteFormData | null>(null)
   const [turns, setTurns] = useState<TurnInfo[]>([])
   const [historyRefresh, setHistoryRefresh] = useState(0)
+  const [historyCollapsed, setHistoryCollapsed] = useState(false)
+  const [historyWidth, setHistoryWidth] = useState(256)
+  const [sidebarWidth, setSidebarWidth] = useState(224)
+  const [inputHeight, setInputHeight] = useState(80)
 
   const currentTurnRef = useRef(0)
 
@@ -212,7 +217,7 @@ export default function App() {
       name: site.name,
       url: site.url,
       engine_type: site.engine_type,
-      selectors: '',
+      selectors: site.selectors || '',
       format_prompt: site.format_prompt || '',
     })
     setShowConfig(true)
@@ -229,19 +234,45 @@ export default function App() {
       const url = isNew ? '/api/sites' : `/api/sites/${formData.id}`
       const method = isNew ? 'POST' : 'PUT'
 
+      let selectorsObj: Record<string, string> = {}
+      const trimmed = formData.selectors.trim()
+      if (trimmed) {
+        try {
+          const parsed = JSON.parse(trimmed)
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            selectorsObj = parsed as Record<string, string>
+          } else {
+            alert('Selectors 必须是 JSON 对象')
+            return
+          }
+        } catch {
+          alert('Selectors JSON 格式错误，请检查')
+          return
+        }
+      }
+
       try {
         const res = await fetch(url, {
           method,
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData),
+          body: JSON.stringify({
+            id: formData.id,
+            name: formData.name,
+            url: formData.url,
+            engine_type: formData.engine_type,
+            selectors: selectorsObj,
+            format_prompt: formData.format_prompt,
+          }),
         })
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`)
+          const errBody = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+          alert(`保存失败: ${errBody.error || res.statusText}`)
+          return
         }
         closeConfig()
         fetchSites()
       } catch (err) {
-        console.error('Failed to save site:', err)
+        alert(`保存失败: ${err}`)
       }
     },
     [editingSite, closeConfig, fetchSites],
@@ -309,9 +340,28 @@ export default function App() {
     setTurns([])
   }, [])
 
+  const handleDeleteSessions = useCallback(
+    async (sessionIds: string[]) => {
+      if (sessionIds.length === 0) return
+      try {
+        for (const id of sessionIds) {
+          await fetch(`/api/sessions/${id}`, { method: 'DELETE' })
+        }
+        if (currentSessionId && sessionIds.includes(currentSessionId)) {
+          handleNewChat()
+        }
+        setHistoryRefresh((v) => v + 1)
+      } catch (err) {
+        console.error('Failed to delete sessions:', err)
+        alert(`删除失败: ${err}`)
+      }
+    },
+    [currentSessionId, handleNewChat],
+  )
+
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-white">
-      <header className="flex items-center justify-between border-b border-slate-700 bg-slate-900 px-4 py-3">
+      <header className="flex h-12 items-center justify-between border-b border-slate-700 bg-slate-900 px-4">
         <span className="text-lg font-semibold">Chat Aggregator</span>
         <div className="flex items-center gap-3">
           <button
@@ -336,12 +386,33 @@ export default function App() {
           onSelectSession={handleSelectSession}
           currentSessionId={currentSessionId}
           refreshTrigger={historyRefresh}
+          collapsed={historyCollapsed}
+          onToggleCollapse={() => setHistoryCollapsed((v) => !v)}
+          onDeleteSessions={handleDeleteSessions}
+          width={historyWidth}
         />
+        {!historyCollapsed && (
+          <ResizeHandle
+            direction="horizontal"
+            current={historyWidth}
+            min={160}
+            max={500}
+            onResize={(delta) => setHistoryWidth((w) => Math.max(160, Math.min(500, w + delta)))}
+          />
+        )}
         <SiteSidebar
           sites={sites}
           selectedSites={selectedSites}
           toggleSite={toggleSite}
           onEditSite={openEditSite}
+          width={sidebarWidth}
+        />
+        <ResizeHandle
+          direction="horizontal"
+          current={sidebarWidth}
+          min={150}
+          max={400}
+          onResize={(delta) => setSidebarWidth((w) => Math.max(150, Math.min(400, w + delta)))}
         />
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex-1 overflow-auto">
@@ -367,7 +438,14 @@ export default function App() {
               </div>
             ))}
           </div>
-          <InputArea onSend={handleSend} disabled={isLoading} />
+          <ResizeHandle
+            direction="vertical"
+            current={inputHeight}
+            min={60}
+            max={400}
+            onResize={(delta) => setInputHeight((h) => Math.max(60, Math.min(400, h - delta)))}
+          />
+          <InputArea onSend={handleSend} disabled={isLoading} height={inputHeight} />
         </main>
       </div>
       <SiteConfigModal

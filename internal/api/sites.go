@@ -43,10 +43,7 @@ func (s *Server) handleCreateSite(c *gin.Context) {
 		return
 	}
 
-	if req.Selectors["input"] == "" || req.Selectors["submit"] == "" || req.Selectors["answer"] == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "selectors.input, selectors.submit and selectors.answer are required"})
-		return
-	}
+	enabled := req.Selectors["input"] != ""
 
 	selectorsJSON, err := json.Marshal(req.Selectors)
 	if err != nil {
@@ -60,7 +57,7 @@ func (s *Server) handleCreateSite(c *gin.Context) {
 		URL:          req.URL,
 		EngineType:   req.EngineType,
 		Selectors:    string(selectorsJSON),
-		Enabled:      true,
+		Enabled:      enabled,
 		FormatPrompt: req.FormatPrompt,
 	}
 
@@ -96,15 +93,17 @@ func (s *Server) handleUpdateSite(c *gin.Context) {
 	}
 
 	var selectorsJSON []byte
+	enabled := existing.Enabled
 	if req.Selectors != nil {
-		if req.Selectors["input"] == "" || req.Selectors["submit"] == "" || req.Selectors["answer"] == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "selectors.input, selectors.submit and selectors.answer are required"})
-			return
-		}
 		selectorsJSON, err = json.Marshal(req.Selectors)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
+		}
+		if req.Selectors["input"] != "" {
+			enabled = true
+		} else if len(req.Selectors) > 0 {
+			enabled = false
 		}
 	} else {
 		selectorsJSON = []byte(existing.Selectors)
@@ -117,7 +116,7 @@ func (s *Server) handleUpdateSite(c *gin.Context) {
 		EngineType:   req.EngineType,
 		Selectors:    string(selectorsJSON),
 		CookieFile:   existing.CookieFile,
-		Enabled:      existing.Enabled,
+		Enabled:      enabled,
 		FormatPrompt: req.FormatPrompt,
 	}
 

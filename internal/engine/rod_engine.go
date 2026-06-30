@@ -21,10 +21,58 @@ import (
 )
 
 type RodEngine struct {
-	browser *rod.Browser
-	db      *storage.DB
-	pages   map[string]*rod.Page
-	mu      sync.Mutex
+	browser     *rod.Browser
+	db          *storage.DB
+	pages       map[string]*rod.Page
+	mu          sync.Mutex
+	controlURL  string
+	userDataDir string
+}
+
+func (re *RodEngine) ensureBrowser() error {
+	if re.browser != nil {
+		connected := true
+		done := make(chan bool)
+		go func() {
+			_, err := re.browser.Pages()
+			done <- (err == nil)
+		}()
+		select {
+		case ok := <-done:
+			connected = ok
+		case <-time.After(3 * time.Second):
+			connected = false
+		}
+		if connected {
+			return nil
+		}
+		log.Printf("[rod] browser disconnected, attempting reconnect")
+	} else {
+		log.Printf("[rod] browser not initialized, attempting launch")
+	}
+
+	re.mu.Lock()
+	re.pages = make(map[string]*rod.Page)
+	re.mu.Unlock()
+
+	if re.userDataDir == "" {
+		re.userDataDir = "./.browser-data"
+	}
+	cleanupLockFiles(re.userDataDir)
+
+	l := createLauncher(re.userDataDir)
+
+	u, err := l.Launch()
+	if err != nil {
+		return fmt.Errorf("launch browser: %w", err)
+	}
+	re.controlURL = u
+	re.browser = rod.New().ControlURL(u)
+	if err := re.browser.Connect(); err != nil {
+		return fmt.Errorf("connect browser: %w", err)
+	}
+	log.Printf("[rod] browser connected successfully")
+	return nil
 }
 
 type Selectors struct {
@@ -53,20 +101,53 @@ func findChromeBinary() string {
 	return ""
 }
 
-func NewRodEngine(db *storage.DB) *RodEngine {
+func createLauncher(userDataDir string) *launcher.Launcher {
 	l := launcher.New()
-
 	chromePath := findChromeBinary()
 	if chromePath != "" {
-		log.Printf("[rod] using browser binary: %s", chromePath)
 		l = l.Bin(chromePath)
-	} else {
+	}
+	l = l.UserDataDir(userDataDir)
+	l = l.Headless(false).Devtools(true)
+	l = l.Delete("enable-automation")
+	l = l.Delete("useAutomationExtension")
+	l = l.Set("disable-blink-features", "AutomationControlled")
+	l = l.Set("disable-features", "IsolateOrigins,site-per-process,AutomationControlled")
+	l = l.Set("no-first-run", "true")
+	l = l.Set("no-default-browser-check", "true")
+	l = l.Set("password-store", "basic")
+	l = l.Set("use-mock-keychain", "true")
+	l = l.Set("lang", "zh-CN")
+	return l
+}
+
+func cleanupLockFiles(userDataDir string) {
+	lockFiles := []string{
+		"lockfile",
+		"SingletonLock",
+		"SingletonSocket",
+		"SingletonCookie",
+		"DevToolsActivePort",
+	}
+	for _, f := range lockFiles {
+		path := userDataDir + string(os.PathSeparator) + f
+		_ = os.Remove(path)
+	}
+	log.Printf("[rod] cleaned up lock files in %s", userDataDir)
+}
+
+func NewRodEngine(db *storage.DB) *RodEngine {
+	chromePath := findChromeBinary()
+	if chromePath == "" {
 		log.Printf("[rod] no system Chrome found, rod will try to download")
+	} else {
+		log.Printf("[rod] using browser binary: %s", chromePath)
 	}
 
 	userDataDir := "./.browser-data"
-	l = l.UserDataDir(userDataDir)
-	l = l.Headless(false).Devtools(true)
+	cleanupLockFiles(userDataDir)
+
+	l := createLauncher(userDataDir)
 
 	u, err := l.Launch()
 	if err != nil {
@@ -82,9 +163,11 @@ func NewRodEngine(db *storage.DB) *RodEngine {
 
 	log.Printf("[rod] browser connected successfully")
 	return &RodEngine{
-		browser: browser,
-		db:      db,
-		pages:   make(map[string]*rod.Page),
+		browser:     browser,
+		db:          db,
+		pages:       make(map[string]*rod.Page),
+		controlURL:  u,
+		userDataDir: userDataDir,
 	}
 }
 
@@ -136,6 +219,21 @@ func (re *RodEngine) getOrCreatePage(site models.Site) (*rod.Page, error) {
 	}
 
 	visibilityJs := `
+		Object.defineProperty(navigator, 'webdriver', {get: function() { return undefined; }, configurable: true});
+		Object.defineProperty(navigator, 'languages', {get: function() { return ['zh-CN', 'zh', 'en']; }, configurable: true});
+		Object.defineProperty(navigator, 'plugins', {get: function() { return [1, 2, 3, 4, 5]; }, configurable: true});
+		if (navigator.permissions && navigator.permissions.query) {
+			var origQuery = navigator.permissions.query.bind(navigator.permissions);
+			navigator.permissions.query = function(params) {
+				if (params && params.name === 'notifications') {
+					return Promise.resolve({state: 'granted'});
+				}
+				return origQuery(params);
+			};
+		}
+		window.chrome = window.chrome || {runtime: {}};
+		var cdcKeys = Object.keys(window).filter(function(k) { return k.indexOf('cdc_') === 0; });
+		cdcKeys.forEach(function(k) { delete window[k]; });
 		Object.defineProperty(document, 'hidden', {get: function() { return false; }, configurable: true});
 		Object.defineProperty(document, 'webkitHidden', {get: function() { return false; }, configurable: true});
 		Object.defineProperty(document, 'visibilityState', {get: function() { return 'visible'; }, configurable: true});
@@ -224,6 +322,7 @@ func (re *RodEngine) typePrompt(page *rod.Page, selector string, prompt string) 
 			if (!el) return 'notfound';
 			if (el.getAttribute('data-slate-editor') === 'true') return 'slate';
 			if (el.getAttribute('data-lexical-editor') === 'true' || el.__lexicalEditor) return 'lexical';
+			if (el.classList && (el.classList.contains('ProseMirror') || el.classList.contains('tiptap'))) return 'prosemirror';
 			if (el.isContentEditable) {
 				var reactKey = Object.keys(el).find(function(k) {
 					return k.indexOf('__reactFiber') === 0;
@@ -267,6 +366,11 @@ func (re *RodEngine) typePrompt(page *rod.Page, selector string, prompt string) 
 		return re.typePromptLexical(page, selector, prompt)
 	}
 
+	if editorType == "prosemirror" {
+		log.Printf("[rod] detected ProseMirror/TipTap editor (%d chars)", len(prompt))
+		return re.typePromptProseMirror(page, selector, prompt)
+	}
+
 	if editorType == "plain" {
 		ceCheckJs := fmt.Sprintf(`() => { var el = document.querySelector(%q); if (!el) return false; return el.isContentEditable; }`, selector)
 		if ceResult, err := page.Eval(ceCheckJs); err == nil && ceResult.Value.Bool() {
@@ -281,6 +385,9 @@ func (re *RodEngine) typePrompt(page *rod.Page, selector string, prompt string) 
 				}
 				if editorType == "lexical" {
 					return re.typePromptLexical(page, selector, prompt)
+				}
+				if editorType == "prosemirror" {
+					return re.typePromptProseMirror(page, selector, prompt)
 				}
 			}
 		}
@@ -313,8 +420,16 @@ func (re *RodEngine) typePrompt(page *rod.Page, selector string, prompt string) 
 				return el.value.substring(0, 80);
 			} else if (el.isContentEditable) {
 				el.focus();
-				el.innerText = %q;
-				el.dispatchEvent(new InputEvent('input', { bubbles: true, data: %q }));
+				var sel = window.getSelection();
+				sel.removeAllRanges();
+				var range = document.createRange();
+				range.selectNodeContents(el);
+				sel.addRange(range);
+				var ok = document.execCommand('insertText', false, %q);
+				if (!ok) {
+					el.innerText = %q;
+					el.dispatchEvent(new InputEvent('input', { bubbles: true, data: %q }));
+				}
 				return (el.innerText || el.textContent || '').substring(0, 80);
 			} else {
 				el.textContent = %q;
@@ -322,7 +437,7 @@ func (re *RodEngine) typePrompt(page *rod.Page, selector string, prompt string) 
 				return (el.textContent || '').substring(0, 80);
 			}
 		}
-	`, selector, prompt, prompt, prompt, prompt, prompt)
+	`, selector, prompt, prompt, prompt, prompt, prompt, prompt)
 
 	result, err := page.Eval(js)
 	if err != nil {
@@ -332,43 +447,230 @@ func (re *RodEngine) typePrompt(page *rod.Page, selector string, prompt string) 
 	if inputResult == "not found" {
 		return errors.New("js input returned not found: element not found")
 	}
-	log.Printf("[rod] JS input succeeded, value=%q", inputResult[:min(50, len(inputResult))])
+
+	verifyJs := fmt.Sprintf(`() => {
+		var el = document.querySelector(%q);
+		if (!el) return '';
+		if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') return (el.value || '').substring(0, 80);
+		return (el.innerText || el.textContent || '').substring(0, 80);
+	}`, selector)
+	if verifyResult, vErr := page.Eval(verifyJs); vErr == nil {
+		verifyText := verifyResult.Value.Str()
+		if verifyText == "" || len(verifyText) < min(10, len(prompt)) {
+			log.Printf("[rod] input verification failed (got %q), retrying with execCommand after 2s", verifyText)
+			time.Sleep(2 * time.Second)
+			retryJs := fmt.Sprintf(`() => {
+				var el = document.querySelector(%q);
+				if (!el) return 'not found';
+				el.focus();
+				if (el.isContentEditable) {
+					var sel = window.getSelection();
+					sel.removeAllRanges();
+					var range = document.createRange();
+					range.selectNodeContents(el);
+					sel.addRange(range);
+					document.execCommand('delete');
+					var ok = document.execCommand('insertText', false, %q);
+					if (!ok) {
+						el.innerText = %q;
+						el.dispatchEvent(new InputEvent('input', { bubbles: true, data: %q }));
+					}
+					return (el.innerText || el.textContent || '').substring(0, 80);
+				}
+				if (el._valueTracker) el._valueTracker.setValue('');
+				var nativeSetter = Object.getOwnPropertyDescriptor(
+					window.HTMLTextAreaElement.prototype, 'value'
+				) || Object.getOwnPropertyDescriptor(
+					window.HTMLInputElement.prototype, 'value'
+				);
+				if (nativeSetter && nativeSetter.set) {
+					nativeSetter.set.call(el, %q);
+				} else {
+					el.value = %q;
+				}
+				el.dispatchEvent(new Event('input', { bubbles: true }));
+				el.dispatchEvent(new Event('change', { bubbles: true }));
+				return el.value.substring(0, 80);
+			}`, selector, prompt, prompt, prompt, prompt, prompt)
+			if retryResult, rErr := page.Eval(retryJs); rErr == nil {
+				inputResult = retryResult.Value.Str()
+				log.Printf("[rod] retry input result: %q", inputResult[:min(50, len(inputResult))])
+			}
+		} else {
+			log.Printf("[rod] JS input succeeded, value=%q", verifyText[:min(50, len(verifyText))])
+		}
+	}
 	return nil
 }
 
-func (re *RodEngine) typePromptLexical(page *rod.Page, selector string, prompt string) error {
+func (re *RodEngine) typePromptProseMirror(page *rod.Page, selector string, prompt string) error {
 	js := fmt.Sprintf(`
 		() => {
 			var el = document.querySelector(%q);
 			if (!el) return 'editor element not found';
 			el.focus();
+
 			var sel = window.getSelection();
 			sel.removeAllRanges();
 			var range = document.createRange();
 			range.selectNodeContents(el);
 			sel.addRange(range);
+			document.execCommand('delete');
+
 			var ok = document.execCommand('insertText', false, %q);
-			if (!ok) {
-				var lexicalEditor = el.__lexicalEditor;
-				if (lexicalEditor && lexicalEditor.update) {
-					lexicalEditor.update(function() {});
+			if (ok) {
+				var text = (el.innerText || el.textContent || '').trim();
+				if (text.length > 0) return 'ok:execCommand:' + text.substring(0, 40);
+			}
+
+			var editor = el.editor;
+			if (!editor) {
+				var desc = el.pmViewDesc;
+				if (desc && desc.view) editor = desc.view;
+			}
+			if (!editor) {
+				var reactKey = Object.keys(el).find(function(k) {
+					return k.indexOf('__reactFiber') === 0;
+				});
+				if (reactKey) {
+					var fiber = el[reactKey];
+					for (var i = 0; i < 15 && fiber; i++) {
+						if (fiber.memoizedProps && fiber.memoizedProps.editor &&
+							fiber.memoizedProps.editor.view) {
+							editor = fiber.memoizedProps.editor.view;
+							break;
+						}
+						fiber = fiber.return;
+					}
 				}
 			}
-			return ok ? 'ok' : 'execCommand failed';
-		}
-	`, selector, prompt)
+			if (editor && editor.dispatch && editor.state) {
+				editor.dispatch(editor.state.tr.insertText(%q));
+				var text2 = (el.innerText || el.textContent || '').trim();
+				if (text2.length > 0) return 'ok:prosemirror-api:' + text2.substring(0, 40);
+			}
 
-	result, err := page.Eval(js)
+			el.innerHTML = '<p>' + %q.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') + '</p>';
+			el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+			var text3 = (el.innerText || el.textContent || '').trim();
+			if (text3.length > 0) return 'ok:innerHTML:' + text3.substring(0, 40);
+			return 'all methods failed';
+		}
+	`, selector, prompt, prompt, prompt)
+
+	result, err := page.Timeout(15 * time.Second).Eval(js)
+	if err != nil {
+		return fmt.Errorf("prosemirror input eval failed: %w", err)
+	}
+
+	status := result.Value.String()
+	if !strings.HasPrefix(status, "ok") {
+		return fmt.Errorf("prosemirror input failed: %s", status)
+	}
+
+	log.Printf("[rod] ProseMirror input succeeded: %s", status[:min(60, len(status))])
+	return nil
+}
+
+func (re *RodEngine) typePromptLexical(page *rod.Page, selector string, prompt string) error {
+	js := fmt.Sprintf(`
+		async () => {
+			var el = document.querySelector(%q);
+			if (!el) return 'editor element not found';
+			el.focus();
+
+			if (!el.__lexicalEditor) {
+				return 'lexical editor not initialized';
+			}
+
+			var lexicalEditor = el.__lexicalEditor;
+			lexicalEditor.update(function() {
+				var root = lexicalEditor._editorState._nodeMap.get('root');
+				if (root) root.clear();
+			});
+			await new Promise(function(r) { setTimeout(r, 150); });
+
+			var ok = document.execCommand('insertText', false, %q);
+			await new Promise(function(r) { setTimeout(r, 200); });
+
+			var text = (el.innerText || el.textContent || '').trim();
+			if (ok && text.length > 0) {
+				return 'ok:execCommand:' + text.substring(0, 40);
+			}
+
+			el.innerText = %q;
+			el.dispatchEvent(new InputEvent('input', { bubbles: true, data: %q, inputType: 'insertText' }));
+			await new Promise(function(r) { setTimeout(r, 200); });
+
+			text = (el.innerText || el.textContent || '').trim();
+			if (text.length > 0) {
+				return 'ok:innerText:' + text.substring(0, 40);
+			}
+			return 'all methods failed';
+		}
+	`, selector, prompt, prompt, prompt)
+
+	result, err := page.Timeout(15 * time.Second).Eval(js)
 	if err != nil {
 		return fmt.Errorf("lexical input eval failed: %w", err)
 	}
 
 	status := result.Value.String()
-	if status != "ok" {
-		return fmt.Errorf("lexical input failed: %s", status)
+	if !strings.HasPrefix(status, "ok") {
+		log.Printf("[rod] Lexical input failed (%s), retrying with contenteditable fallback after 1s", status)
+		time.Sleep(1 * time.Second)
+
+		retryJs := fmt.Sprintf(`
+			async () => {
+				var el = document.querySelector(%q);
+				if (!el) return 'not found';
+				el.focus();
+
+				if (el.__lexicalEditor) {
+					el.__lexicalEditor.update(function() {
+						var root = el.__lexicalEditor._editorState._nodeMap.get('root');
+						if (root) root.clear();
+					});
+					await new Promise(function(r) { setTimeout(r, 150); });
+				}
+
+				var sel = window.getSelection();
+				sel.removeAllRanges();
+				var range = document.createRange();
+				range.selectNodeContents(el);
+				sel.addRange(range);
+				document.execCommand('delete');
+				await new Promise(function(r) { setTimeout(r, 100); });
+
+				document.execCommand('insertText', false, %q);
+				await new Promise(function(r) { setTimeout(r, 200); });
+
+				var text = (el.innerText || el.textContent || '').trim();
+				if (text.length > 0) return 'ok:' + text.substring(0, 40);
+
+				el.innerText = %q;
+				el.dispatchEvent(new InputEvent('input', { bubbles: true, data: %q, inputType: 'insertText' }));
+				await new Promise(function(r) { setTimeout(r, 200); });
+
+				text = (el.innerText || el.textContent || '').trim();
+				if (text.length > 0) return 'ok:innerText:' + text.substring(0, 40);
+				return 'failed';
+			}
+		`, selector, prompt, prompt, prompt)
+
+		retryResult, retryErr := page.Timeout(10 * time.Second).Eval(retryJs)
+		if retryErr != nil {
+			return fmt.Errorf("lexical input failed: %s, retry error: %w", status, retryErr)
+		}
+		retryStatus := retryResult.Value.String()
+		if !strings.HasPrefix(retryStatus, "ok") {
+			return fmt.Errorf("lexical input failed: %s, retry also failed: %s", status, retryStatus)
+		}
+		log.Printf("[rod] Lexical retry succeeded: %s", retryStatus[:min(60, len(retryStatus))])
+		return nil
 	}
 
-	log.Printf("[rod] Lexical execCommand insertText succeeded")
+	log.Printf("[rod] Lexical input succeeded: %s", status[:min(60, len(status))])
 	return nil
 }
 
@@ -423,10 +725,11 @@ func (re *RodEngine) typePromptSlate(page *rod.Page, selector string, prompt str
 	return nil
 }
 
-func (re *RodEngine) submitPrompt(page *rod.Page, selector string) error {
-	log.Printf("[rod] looking for submit element: %s", selector)
+func (re *RodEngine) submitPrompt(page *rod.Page, submitSelector string, inputSelector string) error {
+	if submitSelector != "" && submitSelector != inputSelector {
+		log.Printf("[rod] looking for submit element: %s", submitSelector)
 
-	js := fmt.Sprintf(`
+		js := fmt.Sprintf(`
 		() => {
 			var el = document.querySelector(%q);
 			if (!el) return null;
@@ -442,54 +745,54 @@ func (re *RodEngine) submitPrompt(page *rod.Page, selector string) error {
 				cls: (btn.getAttribute('class') || '').substring(0, 80)
 			};
 		}
-	`, selector)
+	`, submitSelector)
 
-	result, err := page.Timeout(10 * time.Second).Eval(js)
-	if err != nil {
-		log.Printf("[rod] submit JS eval failed: %v, trying fallback", err)
-	} else if result.Value.Nil() {
-		log.Printf("[rod] submit element not found, waiting 2s and retrying")
-		time.Sleep(2 * time.Second)
-		result, err = page.Timeout(10 * time.Second).Eval(js)
-		if err == nil && !result.Value.Nil() && !result.Value.Get("disabled").Bool() {
-			x := result.Value.Get("x").Num()
-			y := result.Value.Get("y").Num()
-			tag := result.Value.Get("tag").Str()
-			cls := result.Value.Get("cls").Str()
-			log.Printf("[rod] found submit button on retry: tag=%s class=%s pos=(%.0f,%.0f)", tag, cls, x, y)
-			if x > 0 && y > 0 {
-				page.Mouse.MoveTo(proto.NewPoint(x, y))
-				page.Mouse.Click(proto.InputMouseButtonLeft, 1)
-				log.Printf("[rod] CDP mouse click succeeded at (%.0f, %.0f)", x, y)
-				return nil
-			}
-		}
-		log.Printf("[rod] submit element not found after retry, trying fallback")
-	} else {
-		disabled := result.Value.Get("disabled").Bool()
-		if disabled {
-			log.Printf("[rod] submit button is disabled, trying fallback")
-		} else {
-			x := result.Value.Get("x").Num()
-			y := result.Value.Get("y").Num()
-			tag := result.Value.Get("tag").Str()
-			cls := result.Value.Get("cls").Str()
-			log.Printf("[rod] found submit button: tag=%s class=%s pos=(%.0f,%.0f)", tag, cls, x, y)
-
-			if x > 0 && y > 0 {
-				if err := page.Mouse.MoveTo(proto.NewPoint(x, y)); err != nil {
-					log.Printf("[rod] mouse move failed: %v, trying JS click", err)
-				} else if err := page.Mouse.Click(proto.InputMouseButtonLeft, 1); err != nil {
-					log.Printf("[rod] mouse click failed: %v, trying JS click", err)
-				} else {
+		result, err := page.Timeout(10 * time.Second).Eval(js)
+		if err != nil {
+			log.Printf("[rod] submit JS eval failed: %v, trying fallback", err)
+		} else if result.Value.Nil() {
+			log.Printf("[rod] submit element not found, waiting 2s and retrying")
+			time.Sleep(2 * time.Second)
+			result, err = page.Timeout(10 * time.Second).Eval(js)
+			if err == nil && !result.Value.Nil() && !result.Value.Get("disabled").Bool() {
+				x := result.Value.Get("x").Num()
+				y := result.Value.Get("y").Num()
+				tag := result.Value.Get("tag").Str()
+				cls := result.Value.Get("cls").Str()
+				log.Printf("[rod] found submit button on retry: tag=%s class=%s pos=(%.0f,%.0f)", tag, cls, x, y)
+				if x > 0 && y > 0 {
+					page.Mouse.MoveTo(proto.NewPoint(x, y))
+					page.Mouse.Click(proto.InputMouseButtonLeft, 1)
 					log.Printf("[rod] CDP mouse click succeeded at (%.0f, %.0f)", x, y)
 					return nil
 				}
 			}
-		}
-	}
+			log.Printf("[rod] submit element not found after retry, trying fallback")
+		} else {
+			disabled := result.Value.Get("disabled").Bool()
+			if disabled {
+				log.Printf("[rod] submit button is disabled, trying fallback")
+			} else {
+				x := result.Value.Get("x").Num()
+				y := result.Value.Get("y").Num()
+				tag := result.Value.Get("tag").Str()
+				cls := result.Value.Get("cls").Str()
+				log.Printf("[rod] found submit button: tag=%s class=%s pos=(%.0f,%.0f)", tag, cls, x, y)
 
-	jsClick := fmt.Sprintf(`
+				if x > 0 && y > 0 {
+					if err := page.Mouse.MoveTo(proto.NewPoint(x, y)); err != nil {
+						log.Printf("[rod] mouse move failed: %v, trying JS click", err)
+					} else if err := page.Mouse.Click(proto.InputMouseButtonLeft, 1); err != nil {
+						log.Printf("[rod] mouse click failed: %v, trying JS click", err)
+					} else {
+						log.Printf("[rod] CDP mouse click succeeded at (%.0f, %.0f)", x, y)
+						return nil
+					}
+				}
+			}
+		}
+
+		jsClick := fmt.Sprintf(`
 		() => {
 			var el = document.querySelector(%q);
 			if (!el) return 'not found';
@@ -499,34 +802,52 @@ func (re *RodEngine) submitPrompt(page *rod.Page, selector string) error {
 			btn.click();
 			return 'ok';
 		}
-	`, selector)
+	`, submitSelector)
 
-	result2, err2 := page.Timeout(5 * time.Second).Eval(jsClick)
-	if err2 == nil && result2.Value.Str() == "ok" {
-		log.Printf("[rod] JS click succeeded (fallback)")
-		return nil
-	}
-	if err2 != nil {
-		log.Printf("[rod] JS click failed: %v", err2)
+		result2, err2 := page.Timeout(5 * time.Second).Eval(jsClick)
+		if err2 == nil && result2.Value.Str() == "ok" {
+			log.Printf("[rod] JS click succeeded (fallback)")
+			return nil
+		}
+		if err2 != nil {
+			log.Printf("[rod] JS click failed: %v", err2)
+		}
 	}
 
 	log.Printf("[rod] trying generic submit button search")
-	genericJs := `
+	time.Sleep(2 * time.Second)
+	genericJs := fmt.Sprintf(`
 		() => {
-			var input = document.querySelector('textarea, input, [contenteditable=true]');
+			var inputEl = document.querySelector(%q);
+			var input = inputEl || document.querySelector('textarea, input, [contenteditable=true], .ProseMirror, [data-testid*=textarea]');
 			if (input) input.focus();
+
+			function isInputRelated(el) {
+				if (!inputEl) return false;
+				if (el === inputEl) return true;
+				if (inputEl.contains(el)) return true;
+				if (el.contains(inputEl)) return true;
+				return false;
+			}
 
 			var selectors = [
 				'button[type=submit]',
 				'button[class*=send]', 'button[class*=submit]',
+				'button[class*=primary]',
 				'div[class*=send] button', 'div[class*=submit] button',
+				'div[class*=send-btn] button', 'div[class*=submit-btn] button',
 				'div[role=button][class*=send]', 'div[role=button][class*=submit]',
 				'[aria-label*=send]', '[aria-label*=发送]', '[aria-label*=提交]',
-				'svg[class*=send]', 'span[class*=send]'
+				'[data-testid*=send]', '[data-testid*=submit]',
+				'svg[class*=send]', 'span[class*=send]',
+				'div[class*=send-button]', 'div[class*=send-button-container]',
+				'button[class*=icon]:not([class*=upload]):not([class*=file]):not([class*=setting]):not([class*=menu]):not([class*=toggle])',
+				'div[class*=enter] svg', 'div[class*=arrow] svg'
 			];
 			for (var i = 0; i < selectors.length; i++) {
 				var el = document.querySelector(selectors[i]);
 				if (!el) continue;
+				if (isInputRelated(el)) continue;
 				var btn = el.tagName === 'BUTTON' ? el : (el.querySelector('button') || el);
 				if (btn.disabled) continue;
 				var rect = btn.getBoundingClientRect();
@@ -537,11 +858,12 @@ func (re *RodEngine) submitPrompt(page *rod.Page, selector string) error {
 
 			if (input) {
 				var parent = input.parentElement;
-				for (var depth = 0; depth < 4 && parent; depth++) {
-					var btns = parent.querySelectorAll('button, [role=button], div[class*=icon], div[class*=btn]');
+				for (var depth = 0; depth < 8 && parent; depth++) {
+					var btns = parent.querySelectorAll('button, [role=button], div[class*=icon], div[class*=btn], div[class*=send], div[class*=submit], span[class*=icon], div[class*=enter], div[class*=arrow]');
 					var candidates = [];
 					for (var j = 0; j < btns.length; j++) {
 						if (btns[j] === input) continue;
+						if (isInputRelated(btns[j])) continue;
 						if (btns[j].disabled) continue;
 						var rect = btns[j].getBoundingClientRect();
 						if (rect.width === 0 || rect.height === 0) continue;
@@ -551,6 +873,12 @@ func (re *RodEngine) submitPrompt(page *rod.Page, selector string) error {
 						if (cls.indexOf('menu') >= 0) continue;
 						if (cls.indexOf('upload') >= 0) continue;
 						if (cls.indexOf('file') >= 0) continue;
+						if (cls.indexOf('voice') >= 0) continue;
+						if (cls.indexOf('mic') >= 0) continue;
+						if (cls.indexOf('image') >= 0) continue;
+						if (cls.indexOf('attach') >= 0) continue;
+						if (cls.indexOf('sidebar') >= 0) continue;
+						if (cls.indexOf('nav') >= 0 && cls.indexOf('send') < 0) continue;
 						var hasSvg = btns[j].querySelector('svg') !== null;
 						candidates.push({el: btns[j], cls: cls.substring(0, 50), x: rect.x, hasSvg: hasSvg});
 					}
@@ -566,8 +894,8 @@ func (re *RodEngine) submitPrompt(page *rod.Page, selector string) error {
 				}
 			}
 			return null;
-		}
-	`
+	}
+	`, inputSelector)
 	result3, err3 := page.Timeout(5 * time.Second).Eval(genericJs)
 	if err3 == nil && !result3.Value.Nil() {
 		selName := result3.Value.Get("selector").Str()
@@ -586,7 +914,7 @@ func (re *RodEngine) submitPrompt(page *rod.Page, selector string) error {
 
 	log.Printf("[rod] generic submit search failed, trying Enter key")
 
-	focusJs := fmt.Sprintf(`() => { var el = document.querySelector(%q); if (!el) el = document.querySelector('textarea, input, [contenteditable=true]'); if (el) { el.focus(); return true; } return false; }`, selector)
+	focusJs := fmt.Sprintf(`() => { var el = document.querySelector(%q); if (!el) el = document.querySelector('textarea, input, [contenteditable=true]'); if (el) { el.focus(); return true; } return false; }`, inputSelector)
 	page.Eval(focusJs)
 	time.Sleep(300 * time.Millisecond)
 
@@ -614,20 +942,68 @@ func (re *RodEngine) submitPrompt(page *rod.Page, selector string) error {
 }
 
 func (re *RodEngine) getAnswerStatus(page *rod.Page, selector string, beforeCount int) (int, string) {
+	if selector == "" {
+		return 0, ""
+	}
+
 	js := fmt.Sprintf(`
 		() => {
 			var els = document.querySelectorAll(%q);
 			if (els.length === 0) return {count: 0, text: ''};
+			function isInThinking(el) {
+				var parent = el.parentElement;
+				for (var i = 0; i < 3 && parent; i++) {
+					var cls = (parent.getAttribute('class') || '').toLowerCase();
+					if (cls.indexOf('think-block') >= 0 || cls.indexOf('think-content') >= 0 ||
+						cls.indexOf('think_process') >= 0 || cls.indexOf('thinking-block') >= 0 ||
+						cls.indexOf('thinking-content') >= 0 || cls.indexOf('reasoning-block') >= 0 ||
+						cls.indexOf('reasoning-content') >= 0 || cls.indexOf('thought-block') >= 0) {
+						return true;
+					}
+					parent = parent.parentElement;
+				}
+				return false;
+			}
 			var startIdx = Math.min(%d, els.length);
 			var maxText = '';
 			for (var i = startIdx; i < els.length; i++) {
+				if (isInThinking(els[i])) continue;
 				var t = (els[i].innerText || els[i].textContent || '').trim();
 				if (t.length > maxText.length) maxText = t;
 			}
-			if (!maxText && startIdx > 0) {
-				for (var i = 0; i < els.length; i++) {
+			if (!maxText) {
+				for (var i = startIdx; i < els.length; i++) {
 					var t = (els[i].innerText || els[i].textContent || '').trim();
 					if (t.length > maxText.length) maxText = t;
+				}
+			}
+			if (!maxText && startIdx > 0) {
+				if (startIdx >= els.length) {
+					var lastEl = els[els.length - 1];
+					if (lastEl && !isInThinking(lastEl)) {
+						maxText = (lastEl.innerText || lastEl.textContent || '').trim();
+					}
+					if (!maxText && lastEl) {
+						maxText = (lastEl.innerText || lastEl.textContent || '').trim();
+					}
+					if (!maxText) {
+						var prevEl = els.length >= 2 ? els[els.length - 2] : null;
+						if (prevEl && !isInThinking(prevEl)) {
+							maxText = (prevEl.innerText || prevEl.textContent || '').trim();
+						}
+					}
+				} else {
+					for (var i = 0; i < els.length; i++) {
+						if (isInThinking(els[i])) continue;
+						var t = (els[i].innerText || els[i].textContent || '').trim();
+						if (t.length > maxText.length) maxText = t;
+					}
+					if (!maxText) {
+						for (var i = 0; i < els.length; i++) {
+							var t = (els[i].innerText || els[i].textContent || '').trim();
+							if (t.length > maxText.length) maxText = t;
+						}
+					}
 				}
 			}
 			return {count: els.length, text: maxText.substring(0, 5000)};
@@ -645,6 +1021,10 @@ func (re *RodEngine) getAnswerStatus(page *rod.Page, selector string, beforeCoun
 func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt string) (string, error) {
 	log.Printf("[rod] SendMessage start: site=%s prompt=%q", site.ID, prompt[:min(50, len(prompt))])
 
+	if err := re.ensureBrowser(); err != nil {
+		return "", fmt.Errorf("browser health check: %w", err)
+	}
+
 	var sels Selectors
 	if err := json.Unmarshal([]byte(site.Selectors), &sels); err != nil {
 		return "", fmt.Errorf("parse selectors: %w", err)
@@ -652,13 +1032,47 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	log.Printf("[rod] selectors: input=%s submit=%s answer=%s wait_for=%s",
 		sels.Input, sels.Submit, sels.Answer, sels.WaitFor)
 
-	if sels.Input == "" || sels.Answer == "" {
-		return "", errors.New("missing required selectors: input and answer are required")
+	if sels.Input == "" {
+		return "", errors.New("missing required selector: input is required")
 	}
 
 	page, err := re.getOrCreatePage(site)
 	if err != nil {
 		return "", fmt.Errorf("get page: %w", err)
+	}
+
+	if sels.Answer == "" {
+		fallbackJs := `() => {
+			var selectors = [
+				'[class*=markdown]', '[class*=message-content]', '[class*=answer]',
+				'[class*=response]', '[class*=assistant]', '[class*=reply]',
+				'[class*=bubble]', '[class*=content-card]', '[class*=flow-markdown]',
+				'[class*=chat-message]', '[class*=ai-message]', '[class*=bot-message]',
+				'.ds-assistant-message-main-content', '[class*=answer-common-card]',
+				'article', '[class*=result-content]',
+				'[class*=prose]', '[class*=rich-text]', '[class*=text-content]',
+				'[class*=output-content]', '[class*=chat-content]',
+				'[class*=conversation-content]', '[class*=message-text]'
+			];
+			for (var s = 0; s < selectors.length; s++) {
+				var els = document.querySelectorAll(selectors[s]);
+				if (els.length > 0) {
+					for (var k = 0; k < els.length; k++) {
+						if (els[k].getBoundingClientRect().width > 50) return selectors[s];
+					}
+				}
+			}
+			return '';
+		}`
+		if fbResult, fbErr := page.Timeout(5*time.Second).Eval(fallbackJs); fbErr == nil {
+			resolved := fbResult.Value.Str()
+			if resolved != "" {
+				sels.Answer = resolved
+				log.Printf("[rod] answer selector resolved from fallback: %s", resolved)
+			} else {
+				log.Printf("[rod] answer selector fallback found no matching elements")
+			}
+		}
 	}
 
 	if sels.WaitFor != "" {
@@ -715,12 +1129,12 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	}
 
 	if sels.Submit != "" {
-		if err := re.submitPrompt(page, sels.Submit); err != nil {
+		if err := re.submitPrompt(page, sels.Submit, sels.Input); err != nil {
 			log.Printf("[rod] submit failed, trying Enter on input: %v", err)
-			_ = re.submitPrompt(page, sels.Input)
+			_ = re.submitPrompt(page, "", sels.Input)
 		}
 	} else {
-		_ = re.submitPrompt(page, sels.Input)
+		_ = re.submitPrompt(page, "", sels.Input)
 	}
 	time.Sleep(1 * time.Second)
 
@@ -747,20 +1161,83 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 			diagResult.Value.Get("url").Str(), postEditorText, postAnswerCount)
 	}
 
+	if postAnswerCount <= beforeCount {
+		log.Printf("[rod] post-submit answerCount=%d <= beforeCount=%d, waiting 3s for elements to load and re-checking", postAnswerCount, beforeCount)
+		time.Sleep(3 * time.Second)
+		if diagResult2, err := page.Eval(diagJs); err == nil {
+			postAnswerCount = diagResult2.Value.Get("answerCount").Int()
+			postEditorText = diagResult2.Value.Get("editorText").Str()
+			log.Printf("[rod] post-submit re-check: editorText=%q answerCount=%d", postEditorText, postAnswerCount)
+		}
+	}
+
+	if postAnswerCount > beforeCount {
+		log.Printf("[rod] answer count increased after submit (%d -> %d), updating beforeCount to exclude user message", beforeCount, postAnswerCount)
+		beforeCount = postAnswerCount
+		_, beforeText = re.getAnswerStatus(page, sels.Answer, beforeCount)
+	}
+
 	if postAnswerCount == beforeCount && strings.Contains(postEditorText, prompt[:min(5, len(prompt))]) {
 		log.Printf("[rod] editor still has prompt text after click, trying JS click on submit")
-		jsSubmitClick := fmt.Sprintf(`
-			() => {
-				var btn = document.querySelector(%q);
-				if (!btn) return 'not found';
-				if (btn.tagName !== 'BUTTON') {
-					var inner = btn.querySelector('button');
-					if (inner) btn = inner;
+
+		var jsSubmitClick string
+		if sels.Submit != "" {
+			jsSubmitClick = fmt.Sprintf(`
+				() => {
+					var btn = document.querySelector(%q);
+					if (!btn) return 'not found';
+					if (btn.tagName !== 'BUTTON') {
+						var inner = btn.querySelector('button');
+						if (inner) btn = inner;
+					}
+					btn.click();
+					return 'clicked: ' + btn.tagName + ' ' + (btn.getAttribute('aria-label') || btn.getAttribute('class') || '').substring(0, 50);
 				}
-				btn.click();
-				return 'clicked: ' + btn.tagName + ' ' + (btn.getAttribute('aria-label') || btn.getAttribute('class') || '').substring(0, 50);
-			}
-		`, sels.Submit)
+			`, sels.Submit)
+		} else {
+			jsSubmitClick = fmt.Sprintf(`
+				() => {
+					var inputEl = document.querySelector(%q);
+					if (!inputEl) return 'input not found';
+					inputEl.focus();
+					function isInputRelated(el) {
+						if (el === inputEl) return true;
+						if (inputEl.contains(el)) return true;
+						if (el.contains(inputEl)) return true;
+						return false;
+					}
+					var input = inputEl;
+					var parent = input.parentElement;
+					for (var depth = 0; depth < 8 && parent; depth++) {
+						var btns = parent.querySelectorAll('button, [role=button], div[class*=icon], div[class*=btn], div[class*=send], div[class*=submit], div[class*=enter], div[class*=arrow]');
+						var candidates = [];
+						for (var j = 0; j < btns.length; j++) {
+							if (btns[j] === input) continue;
+							if (isInputRelated(btns[j])) continue;
+							if (btns[j].disabled) continue;
+							var rect = btns[j].getBoundingClientRect();
+							if (rect.width === 0 || rect.height === 0) continue;
+							var cls = (btns[j].getAttribute('class') || '').toLowerCase();
+							if (cls.indexOf('toggle') >= 0 || cls.indexOf('setting') >= 0 ||
+								cls.indexOf('menu') >= 0 || cls.indexOf('upload') >= 0 ||
+								cls.indexOf('file') >= 0 || cls.indexOf('voice') >= 0 ||
+								cls.indexOf('mic') >= 0 || cls.indexOf('image') >= 0 ||
+								cls.indexOf('attach') >= 0 || cls.indexOf('sidebar') >= 0) continue;
+							candidates.push({el: btns[j], cls: cls.substring(0, 50), x: rect.x, y: rect.y});
+						}
+						if (candidates.length > 0) {
+							var logged = candidates.map(function(c) { return c.cls + '@(' + Math.round(c.x) + ',' + Math.round(c.y) + ')'; });
+							candidates.sort(function(a, b) { return b.x - a.x; });
+							candidates[0].el.scrollIntoView({block: 'center'});
+							candidates[0].el.click();
+							return 'clicked: ' + candidates[0].el.tagName + ' ' + candidates[0].cls + ' | all: ' + logged.join(', ');
+						}
+						parent = parent.parentElement;
+					}
+					return 'no button found near input';
+				}
+			`, sels.Input)
+		}
 		if jsRes, jsErr := page.Eval(jsSubmitClick); jsErr == nil {
 			log.Printf("[rod] JS submit click: %s", jsRes.Value.Str())
 		}
@@ -773,17 +1250,84 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 			afterJsClickCount = diag2.Value.Get("answerCount").Int()
 		}
 		if afterJsClickCount == beforeCount && strings.Contains(afterJsClickText, prompt[:min(5, len(prompt))]) {
-			log.Printf("[rod] JS click also failed, trying Enter key")
-			focusJs := fmt.Sprintf(`() => { var el = document.querySelector(%q); if (el) el.focus(); return el != null; }`, sels.Input)
+		log.Printf("[rod] JS click also failed, trying Enter key")
+		focusJs := fmt.Sprintf(`() => { var el = document.querySelector(%q); if (el) el.focus(); return el != null; }`, sels.Input)
+		page.Eval(focusJs)
+		time.Sleep(200 * time.Millisecond)
+		if err := page.Keyboard.Press(input.Enter); err != nil {
+			log.Printf("[rod] Enter key failed: %v", err)
+		} else {
+			log.Printf("[rod] Enter key pressed as fallback")
+			time.Sleep(2 * time.Second)
+		}
+
+		var afterEnterText string
+		var afterEnterCount int
+		if diag3, err := page.Eval(diagJs); err == nil {
+			afterEnterText = diag3.Value.Get("editorText").Str()
+			afterEnterCount = diag3.Value.Get("answerCount").Int()
+		}
+		if afterEnterCount == beforeCount && strings.Contains(afterEnterText, prompt[:min(5, len(prompt))]) {
+			log.Printf("[rod] Enter key did not submit, trying Ctrl+Enter")
 			page.Eval(focusJs)
 			time.Sleep(200 * time.Millisecond)
-			if err := page.Keyboard.Press(input.Enter); err != nil {
-				log.Printf("[rod] Enter key failed: %v", err)
-			} else {
-				log.Printf("[rod] Enter key pressed as fallback")
+			if err := page.Keyboard.Press(input.ControlLeft); err == nil {
+				page.Keyboard.Press(input.Enter)
+				page.Keyboard.Press(input.ControlLeft)
+				log.Printf("[rod] Ctrl+Enter pressed as fallback")
 				time.Sleep(2 * time.Second)
 			}
+
+			var afterCtrlText string
+			var afterCtrlCount int
+			if diag4, err := page.Eval(diagJs); err == nil {
+				afterCtrlText = diag4.Value.Get("editorText").Str()
+				afterCtrlCount = diag4.Value.Get("answerCount").Int()
+			}
+			if afterCtrlCount == beforeCount && strings.Contains(afterCtrlText, prompt[:min(5, len(prompt))]) {
+				log.Printf("[rod] Ctrl+Enter also failed, dumping all buttons for diagnostic")
+				btnDiagJs := fmt.Sprintf(`
+					() => {
+						var inputEl = document.querySelector(%q);
+						var inputRect = inputEl ? inputEl.getBoundingClientRect() : null;
+						var btns = document.querySelectorAll('button, [role=button], div[class*=icon], div[class*=btn], div[class*=send], div[class*=submit], div[class*=enter], div[class*=arrow], svg[class*=send], svg[class*=submit]');
+						var result = [];
+						for (var i = 0; i < btns.length && result.length < 15; i++) {
+							var rect = btns[i].getBoundingClientRect();
+							if (rect.width === 0 || rect.height === 0) continue;
+							result.push({
+								tag: btns[i].tagName,
+								cls: (btns[i].getAttribute('class') || '').substring(0, 60),
+								aria: (btns[i].getAttribute('aria-label') || '').substring(0, 30),
+								type: btns[i].getAttribute('type') || '',
+								disabled: btns[i].disabled || false,
+								x: Math.round(rect.x),
+								y: Math.round(rect.y),
+								w: Math.round(rect.width),
+								h: Math.round(rect.height),
+								distFromInput: inputRect ? Math.round(Math.abs(rect.y - inputRect.y)) : -1
+							});
+						}
+						result.sort(function(a, b) { return a.distFromInput - b.distFromInput; });
+						return result;
+					}
+				`, sels.Input)
+				if btnDiagRes, btnDiagErr := page.Timeout(5*time.Second).Eval(btnDiagJs); btnDiagErr == nil {
+					arr := btnDiagRes.Value.Arr()
+					log.Printf("[rod] button diagnostic: %d buttons found (sorted by distance from input):", len(arr))
+					for i, v := range arr {
+						if i >= 10 {
+							break
+						}
+						log.Printf("[rod]   btn[%d]: tag=%s cls=%s aria=%s disabled=%v pos=(%d,%d) size=%dx%d distFromInput=%d",
+							i, v.Get("tag").Str(), v.Get("cls").Str(), v.Get("aria").Str(),
+							v.Get("disabled").Bool(), v.Get("x").Int(), v.Get("y").Int(),
+							v.Get("w").Int(), v.Get("h").Int(), v.Get("distFromInput").Int())
+					}
+				}
+			}
 		}
+	}
 	}
 
 	var lastText string
@@ -859,6 +1403,295 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		}
 	}
 
+		if pollCount == 10 && currentCount == 0 {
+			log.Printf("[rod] configured answer selector %q found 0 elements after 10 polls, trying fallback selectors", sels.Answer)
+			fallbackSelectors := []string{
+				`[class*=flow-markdown]`, `[class*=message-content]`, `[class*=answer]`,
+				`[class*=response]`, `[class*=assistant]`, `[class*=reply]`,
+				`[class*=bubble]`, `[class*=content-card]`,
+				`[class*=chat-message]`, `[class*=ai-message]`, `[class*=bot-message]`,
+				`[class*=prose]`, `[class*=rich-text]`, `[class*=text-content]`,
+				`[class*=output-content]`, `[class*=chat-content]`,
+				`[class*=conversation-content]`, `[class*=message-text]`,
+				`[class*=receive]`, `[class*=msg-content]`, `[class*=answer-content]`,
+				`[class*=result-content]`, `[class*=detail-content]`,
+				`[class*=md-body]`, `[class*=md-content]`, `[class*=markdown-body]`,
+				`[class*=text-block]`, `[class*=msg-text]`,
+			}
+			for _, fbSel := range fallbackSelectors {
+				fbJs := fmt.Sprintf(`() => { var els = document.querySelectorAll(%q); var count = 0; var maxText = ''; for (var i = 0; i < els.length; i++) { if (els[i].getBoundingClientRect().width > 50) { count++; var t = (els[i].innerText || els[i].textContent || '').trim(); if (t.length > maxText.length) maxText = t; } } return {count: count, text: maxText.substring(0, 5000)}; }`, fbSel)
+				if fbRes, fbErr := page.Timeout(3 * time.Second).Eval(fbJs); fbErr == nil {
+					fbCount := fbRes.Value.Get("count").Int()
+					fbText := fbRes.Value.Get("text").Str()
+					if fbCount > 0 {
+						log.Printf("[rod] fallback selector %q found %d visible elements (textLen=%d), switching from %q", fbSel, fbCount, len(fbText), sels.Answer)
+						sels.Answer = fbSel
+						beforeCount = fbCount
+						beforeText = fbText
+						lastText = ""
+						stableRounds = 0
+						goto continuePolling
+					}
+				}
+			}
+
+			iframeDiagJs := `() => {
+				var iframes = document.querySelectorAll('iframe');
+				var result = [];
+				for (var i = 0; i < iframes.length; i++) {
+					var rect = iframes[i].getBoundingClientRect();
+					if (rect.width < 100 || rect.height < 100) continue;
+					result.push({
+						src: (iframes[i].src || '').substring(0, 120),
+						w: Math.round(rect.width),
+						h: Math.round(rect.height),
+						x: Math.round(rect.x),
+						y: Math.round(rect.y)
+					});
+				}
+				return result;
+			}`
+			if iframeRes, iframeErr := page.Timeout(3 * time.Second).Eval(iframeDiagJs); iframeErr == nil {
+				arr := iframeRes.Value.Arr()
+				if len(arr) > 0 {
+					log.Printf("[rod] %d visible iframes found:", len(arr))
+					for i, v := range arr {
+						if i >= 5 {
+							break
+						}
+						log.Printf("[rod]   iframe[%d]: src=%s size=%dx%d pos=(%d,%d)",
+							i, v.Get("src").Str(), v.Get("w").Int(), v.Get("h").Int(),
+							v.Get("x").Int(), v.Get("y").Int())
+					}
+				} else {
+					log.Printf("[rod] no visible iframes found")
+				}
+			}
+
+			diagAnswerJs := `() => {
+				var candidates = [];
+				var allEls = document.querySelectorAll('div, article, section, pre');
+				for (var i = 0; i < allEls.length; i++) {
+					var el = allEls[i];
+					var cls = el.getAttribute('class') || '';
+					if (cls.indexOf('sidebar') >= 0 || cls.indexOf('w-sidebar') >= 0 ||
+						cls.indexOf('nav') >= 0 || cls.indexOf('menu') >= 0) continue;
+					var parent = el.parentElement;
+					var skipParent = false;
+					for (var j = 0; j < 5 && parent; j++) {
+						var pcls = parent.getAttribute('class') || '';
+						if (pcls.indexOf('sidebar') >= 0 || pcls.indexOf('w-sidebar') >= 0) {
+							skipParent = true;
+							break;
+						}
+						parent = parent.parentElement;
+					}
+					if (skipParent) continue;
+					var text = (el.innerText || el.textContent || '').trim();
+					if (text.length > 30) {
+						var rect = el.getBoundingClientRect();
+						if (rect.width > 200 && rect.height > 30) {
+							candidates.push({
+								tag: el.tagName,
+								cls: cls.substring(0, 80),
+								textLen: text.length,
+								textPreview: text.substring(0, 80)
+							});
+						}
+					}
+				}
+				candidates.sort(function(a, b) { return b.textLen - a.textLen; });
+				return candidates.slice(0, 10);
+			}`
+			if diagRes, diagErr := page.Timeout(5 * time.Second).Eval(diagAnswerJs); diagErr == nil {
+				arr := diagRes.Value.Arr()
+				log.Printf("[rod] diagnostic (non-sidebar): %d potential answer containers:", len(arr))
+				for i, v := range arr {
+					if i >= 8 {
+						break
+					}
+					log.Printf("[rod]   candidate[%d]: tag=%s cls=%s textLen=%d preview=%q",
+						i, v.Get("tag").Str(), v.Get("cls").Str(), v.Get("textLen").Int(), v.Get("textPreview").Str())
+				}
+			}
+		}
+
+		if pollCount == 30 && (currentCount < beforeCount || (currentCount == 0 && beforeCount == 0)) {
+		log.Printf("[rod] no viable answer elements after 30 polls (count=%d before=%d), trying fallback selectors", currentCount, beforeCount)
+		promptSnippet := prompt[:min(20, len(prompt))]
+		fbSelectors30 := []string{
+			`[class*=markdown]`, `[class*=message-content]`, `[class*=prose]`,
+			`[class*=answer]`, `[class*=response]`, `[class*=assistant]`,
+			`[class*=chat-message]`, `[class*=bubble]`, `[class*=content-card]`,
+			`[class*=receive]`, `[class*=msg-content]`, `[class*=answer-content]`,
+			`[class*=result-content]`, `[class*=md-body]`, `[class*=md-content]`,
+			`[class*=markdown-body]`, `[class*=text-block]`, `[class*=msg-text]`,
+			`[class*=flow-markdown]`, `[class*=rich-text]`, `[class*=text-content]`,
+			`[class*=output-content]`, `[class*=chat-content]`,
+			`[class*=conversation-content]`, `[class*=detail-content]`,
+		}
+		fbFound := false
+		for _, fbSel := range fbSelectors30 {
+			fbJs := fmt.Sprintf(`() => {
+				var els = document.querySelectorAll(%q);
+				var totalCount = 0;
+				var count = 0;
+				var maxText = '';
+				var snip = %q;
+				for (var i = 0; i < els.length; i++) {
+					if (els[i].getBoundingClientRect().width < 50) continue;
+					totalCount++;
+					var t = (els[i].innerText || els[i].textContent || '').trim();
+					if (t.length < 30) continue;
+					if (snip && t.indexOf(snip) >= 0) continue;
+					count++;
+					if (t.length > maxText.length) maxText = t;
+				}
+				return {count: count, totalCount: totalCount, text: maxText.substring(0, 5000)};
+			}`, fbSel, promptSnippet)
+			if fbRes, fbErr := page.Timeout(3 * time.Second).Eval(fbJs); fbErr == nil {
+				fbCount := fbRes.Value.Get("count").Int()
+				fbTotal := fbRes.Value.Get("totalCount").Int()
+				fbText := fbRes.Value.Get("text").Str()
+				if fbCount > 0 && len(fbText) > 200 {
+					log.Printf("[rod] fallback selector %q found %d non-prompt elements (total=%d, textLen=%d), switching from %q", fbSel, fbCount, fbTotal, len(fbText), sels.Answer)
+					sels.Answer = fbSel
+					beforeCount = fbTotal
+					beforeText = fbText
+					lastText = ""
+					stableRounds = 0
+					fbFound = true
+					goto continuePolling
+				}
+			}
+		}
+		if !fbFound {
+			log.Printf("[rod] no fallback selector found elements excluding prompt, dumping diagnostics")
+		}
+			fullDiagJs := `() => {
+				var candidates = [];
+				var allEls = document.querySelectorAll('div, p, span, article, section, pre, td, li, blockquote');
+				for (var i = 0; i < allEls.length; i++) {
+					var el = allEls[i];
+					var cls = el.getAttribute('class') || '';
+					if (cls.indexOf('sidebar') >= 0 || cls.indexOf('w-sidebar') >= 0) continue;
+					if (cls.indexOf('nav') >= 0 || cls.indexOf('menu') >= 0) continue;
+					var parent = el.parentElement;
+					var skipParent = false;
+					for (var j = 0; j < 5 && parent; j++) {
+						var pcls = parent.getAttribute('class') || '';
+						if (pcls.indexOf('sidebar') >= 0 || pcls.indexOf('w-sidebar') >= 0 ||
+							pcls.indexOf('nav') >= 0) {
+							skipParent = true;
+							break;
+						}
+						parent = parent.parentElement;
+					}
+					if (skipParent) continue;
+					var text = (el.innerText || el.textContent || '').trim();
+					if (text.length < 10 || text.length > 5000) continue;
+					var rect = el.getBoundingClientRect();
+					if (rect.width < 100 || rect.height < 10) continue;
+					var hasBlockChild = false;
+					for (var c = 0; c < el.children.length; c++) {
+						var ctag = el.children[c].tagName;
+						if (ctag === 'DIV' || ctag === 'P' || ctag === 'ARTICLE' || ctag === 'SECTION' || ctag === 'UL' || ctag === 'OL' || ctag === 'PRE' || ctag === 'BLOCKQUOTE') {
+							hasBlockChild = true;
+							break;
+						}
+					}
+					if (hasBlockChild) continue;
+					candidates.push({
+						tag: el.tagName,
+						cls: cls.substring(0, 80),
+						textLen: text.length,
+						textPreview: text.substring(0, 100),
+						x: Math.round(rect.x),
+						y: Math.round(rect.y),
+						w: Math.round(rect.width),
+						h: Math.round(rect.height)
+					});
+				}
+				candidates.sort(function(a, b) { return a.y - b.y; });
+				return candidates.slice(0, 20);
+			}`
+			if fullDiagRes, fullDiagErr := page.Timeout(5 * time.Second).Eval(fullDiagJs); fullDiagErr == nil {
+				arr := fullDiagRes.Value.Arr()
+				log.Printf("[rod] full diagnostic: %d leaf elements with text found (sorted by Y):", len(arr))
+				for i, v := range arr {
+					if i >= 15 {
+						break
+					}
+					log.Printf("[rod]   elem[%d]: tag=%s cls=%s textLen=%d pos=(%d,%d) size=%dx%d text=%q",
+						i, v.Get("tag").Str(), v.Get("cls").Str(), v.Get("textLen").Int(),
+						v.Get("x").Int(), v.Get("y").Int(), v.Get("w").Int(), v.Get("h").Int(),
+						v.Get("textPreview").Str())
+				}
+			}
+
+			parentDiagJs := `() => {
+				var result = [];
+				var seen = {};
+				var allEls = document.querySelectorAll('div, article, section');
+				for (var i = 0; i < allEls.length; i++) {
+					var el = allEls[i];
+					var cls = el.getAttribute('class') || '';
+					if (cls.indexOf('sidebar') >= 0 || cls.indexOf('w-sidebar') >= 0) continue;
+					if (cls.indexOf('nav') >= 0 || cls.indexOf('menu') >= 0) continue;
+					var parent = el.parentElement;
+					var skipParent = false;
+					for (var j = 0; j < 5 && parent; j++) {
+						var pcls = parent.getAttribute('class') || '';
+						if (pcls.indexOf('sidebar') >= 0 || pcls.indexOf('w-sidebar') >= 0 ||
+							pcls.indexOf('nav') >= 0) {
+							skipParent = true;
+							break;
+						}
+						parent = parent.parentElement;
+					}
+					if (skipParent) continue;
+					var text = (el.innerText || el.textContent || '').trim();
+					if (text.length < 100 || text.length > 10000) continue;
+					var rect = el.getBoundingClientRect();
+					if (rect.width < 200) continue;
+					var hasListOrPre = el.querySelector('ul, ol, pre, table, blockquote, h1, h2, h3, h4, h5, h6') !== null;
+					if (!hasListOrPre) continue;
+					var promptText = text.substring(0, 50);
+					if (seen[promptText]) continue;
+					seen[promptText] = true;
+					result.push({
+						tag: el.tagName,
+						cls: cls.substring(0, 100),
+						textLen: text.length,
+						textPreview: text.substring(0, 120),
+						childTags: Array.from(el.children).map(function(c) { return c.tagName; }).join(','),
+						x: Math.round(rect.x),
+						y: Math.round(rect.y),
+						w: Math.round(rect.width),
+						h: Math.round(rect.height)
+					});
+				}
+				result.sort(function(a, b) { return b.textLen - a.textLen; });
+				return result.slice(0, 10);
+			}`
+			if parentRes, parentErr := page.Timeout(5 * time.Second).Eval(parentDiagJs); parentErr == nil {
+				arr := parentRes.Value.Arr()
+				log.Printf("[rod] parent container diagnostic: %d containers with structured content found:", len(arr))
+				for i, v := range arr {
+					if i >= 8 {
+						break
+					}
+					log.Printf("[rod]   parent[%d]: tag=%s cls=%s textLen=%d children=[%s] pos=(%d,%d) size=%dx%d text=%q",
+						i, v.Get("tag").Str(), v.Get("cls").Str(), v.Get("textLen").Int(),
+						v.Get("childTags").Str(),
+						v.Get("x").Int(), v.Get("y").Int(), v.Get("w").Int(), v.Get("h").Int(),
+						v.Get("textPreview").Str())
+				}
+			}
+		}
+
+	continuePolling:
+
 		if pollCount%20 == 0 {
 			log.Printf("[rod] still polling... count=%d before=%d poll=%d", currentCount, beforeCount, pollCount)
 		}
@@ -879,6 +1712,161 @@ done:
 	if extractErr != nil {
 		log.Printf("[rod] content extraction failed: %v, falling back to polling text", extractErr)
 		finalText = lastText
+	}
+
+	if beforeCount == 0 && len(prompt) > 10 {
+		promptCheck := prompt[:min(30, len(prompt))]
+		if strings.Contains(finalText[:min(len(finalText), len(promptCheck)+50)], promptCheck) {
+			stripJs := fmt.Sprintf(`() => {
+				var els = document.querySelectorAll(%q);
+				var parts = [];
+				var promptSnip = %q;
+				for (var i = 0; i < els.length; i++) {
+					var t = (els[i].innerText || els[i].textContent || '').trim();
+					if (t.indexOf(promptSnip) >= 0 && t.length < promptSnip.length + 200) continue;
+					parts.push(i);
+				}
+				return JSON.stringify(parts);
+			}`, sels.Answer, promptCheck)
+			if stripRes, stripErr := page.Timeout(5*time.Second).Eval(stripJs); stripErr == nil {
+				var indices []int
+				if json.Unmarshal([]byte(stripRes.Value.Str()), &indices) == nil && len(indices) > 0 {
+					extractJs := fmt.Sprintf(`() => {
+						function htmlToMd(el) {
+							function esc(s) { return (s || '').replace(/\|/g, '\\|'); }
+							function convert(node, depth) {
+								if (depth > 15) return '';
+								var result = '';
+								for (var i = 0; i < node.childNodes.length; i++) {
+									var child = node.childNodes[i];
+									if (child.nodeType === 3) {
+										result += child.textContent.replace(/\s+/g, ' ');
+									} else if (child.nodeType === 1) {
+										var tag = child.tagName.toLowerCase();
+										var cls = (child.getAttribute('class') || '').toLowerCase();
+										if (tag === 'button' || tag === 'svg' || tag === 'path' ||
+											cls.indexOf('copy') >= 0 || cls.indexOf('download') >= 0 ||
+											cls.indexOf('clipboard') >= 0 || cls.indexOf('toolbar') >= 0 ||
+											cls.indexOf('action') >= 0 || cls.indexOf('code-header') >= 0) continue;
+										switch (tag) {
+											case 'h1': result += '\n# ' + convert(child, depth+1).trim() + '\n\n'; break;
+											case 'h2': result += '\n## ' + convert(child, depth+1).trim() + '\n\n'; break;
+											case 'h3': result += '\n### ' + convert(child, depth+1).trim() + '\n\n'; break;
+											case 'h4': result += '\n#### ' + convert(child, depth+1).trim() + '\n\n'; break;
+											case 'h5': result += '\n##### ' + convert(child, depth+1).trim() + '\n\n'; break;
+											case 'h6': result += '\n###### ' + convert(child, depth+1).trim() + '\n\n'; break;
+											case 'p': result += '\n' + convert(child, depth+1).trim() + '\n\n'; break;
+											case 'br': result += '\n'; break;
+											case 'hr': result += '\n---\n\n'; break;
+											case 'strong': case 'b': result += '**' + convert(child, depth+1).trim() + '**'; break;
+											case 'em': case 'i': result += '*' + convert(child, depth+1).trim() + '*'; break;
+											case 'del': case 's': result += '~~' + convert(child, depth+1).trim() + '~~'; break;
+											case 'code':
+												var codeCls = child.getAttribute('class') || '';
+												var langMatch = codeCls.match(/language-(\w+)/);
+												if (langMatch && child.parentElement && child.parentElement.tagName.toLowerCase() === 'pre') {
+													result += convert(child, depth+1);
+												} else {
+													result += '\x60' + (child.textContent || '') + '\x60';
+												}
+												break;
+											case 'pre':
+												var codeEl = child.querySelector('code');
+												var codeSource = codeEl || child;
+												var codeClone = codeSource.cloneNode(true);
+												var lineNumEls = codeClone.querySelectorAll('[class*="line-number"], [class*="lineno"], [data-line-number]');
+												for (var ln = 0; ln < lineNumEls.length; ln++) lineNumEls[ln].remove();
+												var codeText = (codeClone.textContent || '').trim();
+												var preCls = child.getAttribute('class') || '';
+												var codeLang = '';
+												var preM = preCls.match(/language-(\w+)/);
+												if (preM) codeLang = preM[1];
+												if (!codeLang && codeEl) {
+													var cc = codeEl.getAttribute('class') || '';
+													var cm = cc.match(/language-(\w+)/);
+													if (cm) codeLang = cm[1];
+												}
+												if (codeText.length > 0) {
+													result += '\n\x60\x60\x60' + codeLang + '\n' + codeText + '\n\x60\x60\x60\n\n';
+												}
+												break;
+											case 'ul': case 'ol':
+												var items = child.children;
+												for (var li = 0; li < items.length; li++) {
+													if (items[li].tagName === 'LI') {
+														var prefix = tag === 'ol' ? (li+1) + '. ' : '- ';
+														result += prefix + convert(items[li], depth+1).trim() + '\n';
+													}
+												}
+												result += '\n';
+												break;
+											case 'blockquote':
+												var bqText = convert(child, depth+1).trim();
+												var bqLines = bqText.split('\n');
+												for (var bi = 0; bi < bqLines.length; bi++) {
+													result += '> ' + bqLines[bi] + '\n';
+												}
+												result += '\n';
+												break;
+											case 'table':
+												var rows = child.querySelectorAll('tr');
+												for (var ri = 0; ri < rows.length; ri++) {
+													var cells = rows[ri].querySelectorAll('th,td');
+													var rowData = [];
+													for (var ci = 0; ci < cells.length; ci++) {
+														rowData.push(esc(convert(cells[ci], depth+1).trim()));
+													}
+													result += '| ' + rowData.join(' | ') + ' |\n';
+													if (ri === 0) {
+														result += '|' + Array(rows[0].querySelectorAll('th,td').length+1).join(' --- |') + '\n';
+													}
+												}
+												result += '\n';
+												break;
+											case 'a':
+												var href = child.getAttribute('href') || '';
+												var linkText = convert(child, depth+1).trim();
+												if (href) result += '[' + linkText + '](' + href + ')';
+												else result += linkText;
+												break;
+											case 'img':
+												var src = child.getAttribute('src') || '';
+												var alt = child.getAttribute('alt') || '';
+												if (src) result += '![' + alt + '](' + src + ')';
+												break;
+											default: result += convert(child, depth+1); break;
+										}
+									}
+								}
+								return result;
+							}
+							return convert(el, 0).replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
+						}
+						var els = document.querySelectorAll(%q);
+						var indices = %s;
+						var parts = [];
+						for (var ii = 0; ii < indices.length; ii++) {
+							var idx = indices[ii];
+							if (idx >= els.length) continue;
+							var md = htmlToMd(els[idx]).trim();
+							var raw = (els[idx].innerText || els[idx].textContent || '').trim();
+							if (md.length < raw.length * 0.7 && raw.length > md.length + 50) {
+								md = raw;
+							}
+							if (md) parts.push(md);
+						}
+						return parts.join('\\n\\n');
+					}`, sels.Answer, stripRes.Value.Str())
+					if reExtractRes, reErr := page.Timeout(10*time.Second).Eval(extractJs); reErr == nil {
+						reText := reExtractRes.Value.Str()
+						if len(reText) > 50 && len(reText) > len(finalText)/2 {
+							log.Printf("[rod] re-extracted without prompt element: %d chars (was %d)", len(reText), len(finalText))
+							finalText = reText
+						}
+					}
+				}
+			}
+		}
 	}
 
 	log.Printf("[rod] answer received: %d chars, text=%q", len(finalText), finalText[:min(100, len(finalText))])
@@ -904,6 +1892,9 @@ done:
 }
 
 func (re *RodEngine) StartNewChat(site models.Site) error {
+	if err := re.ensureBrowser(); err != nil {
+		return fmt.Errorf("browser health check: %w", err)
+	}
 	page, err := re.getOrCreatePage(site)
 	if err != nil {
 		return err

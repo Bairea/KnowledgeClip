@@ -118,6 +118,21 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 				return false;
 			}
 
+			function isInThinking(el) {
+				var parent = el.parentElement;
+				for (var i = 0; i < 3 && parent; i++) {
+					var pcls = (parent.getAttribute('class') || '').toLowerCase();
+					if (pcls.indexOf('think-block') >= 0 || pcls.indexOf('think-content') >= 0 ||
+						pcls.indexOf('think_process') >= 0 || pcls.indexOf('thinking-block') >= 0 ||
+						pcls.indexOf('thinking-content') >= 0 || pcls.indexOf('reasoning-block') >= 0 ||
+						pcls.indexOf('reasoning-content') >= 0 || pcls.indexOf('thought-block') >= 0) {
+						return true;
+					}
+					parent = parent.parentElement;
+				}
+				return false;
+			}
+
 			function scoreButton(btn) {
 				var text = (btn.textContent || btn.innerText || '').trim().toLowerCase();
 				var cls = (btn.getAttribute('class') || '').toLowerCase();
@@ -126,6 +141,7 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 				var rect = btn.getBoundingClientRect();
 				if (rect.width === 0 || rect.height === 0) return 0;
 				if (cls.indexOf('copyright') >= 0) return 0;
+				if (isInThinking(btn)) return 0;
 
 				var score = 0;
 				if (text === '\u590d\u5236' || text === 'copy' || text === '\u590d\u5236\u5185\u5bb9') score += 100;
@@ -152,8 +168,13 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 				return score;
 			}
 
-			var answerEls = document.querySelectorAll(%q);
-			if (answerEls.length === 0) return {status: 'no answer', text: ''};
+			var allAnswerEls = document.querySelectorAll(%q);
+			if (allAnswerEls.length === 0) return {status: 'no answer', text: ''};
+			var answerEls = [];
+			for (var fi = 0; fi < allAnswerEls.length; fi++) {
+				if (!isInThinking(allAnswerEls[fi])) answerEls.push(allAnswerEls[fi]);
+			}
+			if (answerEls.length === 0) answerEls = Array.prototype.slice.call(allAnswerEls);
 			var answerEl = answerEls[answerEls.length - 1];
 
 			var searchRoot = answerEl;
@@ -209,9 +230,9 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 			var bestInfo = 'none';
 			var earlyExitThreshold = Math.max(500, Math.floor(%d * 0.5));
 			for (var i = 0; i < candidates.length; i++) {
-				window.__capturedMarkdown = '';
-				candidates[i].el.scrollIntoView({block: 'center'});
-				candidates[i].el.click();
+			window.__capturedMarkdown = '';
+			candidates[i].el.scrollIntoView({block: 'center'});
+			try { candidates[i].el.click(); } catch(e) { candidates[i].el.dispatchEvent(new MouseEvent('click', {bubbles: true})); }
 
 				await new Promise(function(r) { setTimeout(r, 800); });
 
@@ -439,17 +460,48 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 			var els = document.querySelectorAll(%q);
 			if (els.length === 0) return {count: 0, text: ''};
 
-			var maxLen = 0;
-			var maxText = '';
-			for (var i = %d; i < els.length; i++) {
-				var t = htmlToMd(els[i]).trim();
-				if (t.length > maxLen) {
-					maxLen = t.length;
-					maxText = t;
+			function isInThinking(el) {
+				var parent = el.parentElement;
+				for (var i = 0; i < 3 && parent; i++) {
+					var cls = (parent.getAttribute('class') || '').toLowerCase();
+					if (cls.indexOf('think-block') >= 0 || cls.indexOf('think-content') >= 0 ||
+						cls.indexOf('think_process') >= 0 || cls.indexOf('thinking-block') >= 0 ||
+						cls.indexOf('thinking-content') >= 0 || cls.indexOf('reasoning-block') >= 0 ||
+						cls.indexOf('reasoning-content') >= 0 || cls.indexOf('thought-block') >= 0) {
+						return true;
+					}
+					parent = parent.parentElement;
 				}
+				return false;
 			}
+
+			var parts = [];
+			for (var i = %d; i < els.length; i++) {
+				if (isInThinking(els[i])) continue;
+				var md = htmlToMd(els[i]).trim();
+				var raw = (els[i].innerText || els[i].textContent || '').trim();
+				raw = raw.replace(/^\s*(Table|\u8868\u683c|Python|JavaScript|Java|Go|Golang|Rust|TypeScript|C\+\+|C#|SQL|HTML|CSS|Bash|Shell|JSON|YAML|XML|Markdown|Code|\u4ee3\u7801|Copy|Download|\u590d\u5236|\u4e0b\u8f7d|Share|\u5206\u4eab|Regenerate|\u91cd\u65b0\u751f\u6210|Kotlin|Swift|Ruby|PHP|Perl|Scala|Dart|Lua|Matlab|\u8fd0\u884c|\u8fd0\u884c\u8f93\u51fa\u793a\u4f8b|plaintext)\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+				if (md.length < raw.length * 0.7 && raw.length > md.length + 50) {
+					md = raw;
+				}
+				if (md) parts.push(md);
+			}
+			var maxText = parts.join('\\n\\n');
 			if (maxText === '' && els.length > 0) {
-				maxText = htmlToMd(els[els.length - 1]).trim();
+				var bestLen = 0;
+				for (var i = 0; i < els.length; i++) {
+					if (isInThinking(els[i])) continue;
+					var md = htmlToMd(els[i]).trim();
+					var raw = (els[i].innerText || els[i].textContent || '').trim();
+					raw = raw.replace(/^\s*(Table|\u8868\u683c|Python|JavaScript|Java|Go|Golang|Rust|TypeScript|C\+\+|C#|SQL|HTML|CSS|Bash|Shell|JSON|YAML|XML|Markdown|Code|\u4ee3\u7801|Copy|Download|\u590d\u5236|\u4e0b\u8f7d|Share|\u5206\u4eab|Regenerate|\u91cd\u65b0\u751f\u6210|Kotlin|Swift|Ruby|PHP|Perl|Scala|Dart|Lua|Matlab|\u8fd0\u884c|\u8fd0\u884c\u8f93\u51fa\u793a\u4f8b|plaintext)\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+					if (md.length < raw.length * 0.7 && raw.length > md.length + 50) {
+						md = raw;
+					}
+					if (md.length > bestLen) {
+						bestLen = md.length;
+						maxText = md;
+					}
+				}
 			}
 			if (maxText.length > 50000) maxText = maxText.substring(0, 50000);
 			return {count: els.length, text: maxText};

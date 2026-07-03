@@ -483,6 +483,21 @@ WebSocket 消息协议与 `internal/api/websocket.go` 的 `MessageUpdate` 严格
   - **`HtmlToMarkdownExtractor` `isInThinking` 收紧**：从 10 层 + 宽泛模式改为 3 层 + 特定模式，避免误过滤正式回答
   - **`HtmlToMarkdownExtractor` innerText fallback UI 标签过滤**：raw innerText 使用前正则移除独立成行的 UI 标签（python/运行/copy/复制等 40+ 标签）
 
+### 2026-07-01 修复多轮对话内容提取不对应
+
+根因：`HtmlToMarkdownExtractor.Extract` 的 fallback 在 `beforeCount >= els.length`（多轮对话中的常见情况）时遍历所有 answer 元素并取最长文本，返回了上一轮的旧回答而非最新回答。`getAnswerStatus` 的 `else` 分支也有类似问题。次要 bug：`parts.join('\\n\\n')` 使用字面量 `\n\n` 而非实际换行符。
+
+- `internal/engine/content_extractor.go`：
+  - **`HtmlToMarkdownExtractor.Extract` fallback 改为从最后一个元素向前查找**：取第一个非空、非思考过程的元素，而非遍历所有元素取最长。匹配 `getAnswerStatus` 的 `startIdx >= els.length` 分支行为
+  - **修复 join 分隔符**：`parts.join('\\n\\n')` 改为 `parts.join('\n\n')`，使用实际换行符
+- `internal/engine/rod_engine.go`：
+  - **`getAnswerStatus` `else` 分支改为看最后一个元素**：从遍历所有元素取最长改为取最后一个元素的文本，与 `startIdx >= els.length` 分支行为一致
+  - **修复内联 `htmlToMd` 的 join 分隔符**：同上 `\\n\\n` → `\n\n`
+- `export_session.py`（新增）：从 SQLite 数据库导出会话数据为 JSON，支持 `list`/`export`/`summary` 命令，用于验证多轮对话内容提取
+- `check_chat_mismatch.py`（重写）：读取导出的 JSON，用 LLM 判定每条回答是否与 prompt 对应，输出对应/不对应/无法判断及原因
+- `test_multi_turn.py`（新增）：通过 API 发送多轮对话，轮询等待所有站点完成，自动导出并运行 LLM 验证
+- 验证结果：修复前 DeepSeek Turn 2 返回 Turn 1 的旧回答；修复后 DeepSeek 和 GLM 正确返回 "3+1=4" 的计算结果
+
 ## 开发与验证约定
 
 每次修改代码后，必须按以下顺序执行编译与运行：

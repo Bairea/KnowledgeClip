@@ -1,4 +1,4 @@
-package engine
+﻿package engine
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,15 +23,19 @@ import (
 )
 
 type RodEngine struct {
-	browser     *rod.Browser
-	db          *storage.DB
-	pages       map[string]*rod.Page
-	mu          sync.Mutex
-	controlURL  string
-	userDataDir string
+	browser        *rod.Browser
+	db             *storage.DB
+	pages          map[string]*rod.Page
+	mu             sync.Mutex
+	browserMu      sync.Mutex
+	controlURL     string
+	userDataDir    string
+	tabGuardStarted bool
 }
 
 func (re *RodEngine) ensureBrowser() error {
+	re.browserMu.Lock()
+	defer re.browserMu.Unlock()
 	if re.browser != nil {
 		connected := true
 		done := make(chan bool)
@@ -47,17 +53,80 @@ func (re *RodEngine) ensureBrowser() error {
 			return nil
 		}
 		log.Printf("[rod] browser disconnected, attempting reconnect")
+		if re.controlURL != "" {
+			re.browser = rod.New().ControlURL(re.controlURL)
+			reconnectDone := make(chan error)
+			go func() {
+				reconnectDone <- re.browser.Connect()
+			}()
+			select {
+			case err := <-reconnectDone:
+				if err == nil {
+					verifyDone := make(chan bool)
+					go func() {
+						_, e := re.browser.Pages()
+						verifyDone <- (e == nil)
+					}()
+					select {
+					case ok := <-verifyDone:
+						if ok {
+							log.Printf("[rod] browser reconnected to existing controlURL: %s", re.controlURL)
+							return nil
+						}
+					case <-time.After(3 * time.Second):
+					}
+				}
+			case <-time.After(3 * time.Second):
+			}
+			log.Printf("[rod] reconnect to existing controlURL failed")
+		}
+		if re.userDataDir == "" {
+			re.userDataDir = "./.browser-data"
+		}
+		portURL := readDevToolsActivePort(re.userDataDir)
+		if portURL != "" && portURL != re.controlURL {
+			log.Printf("[rod] trying DevToolsActivePort URL: %s", portURL)
+			re.browser = rod.New().ControlURL(portURL)
+			portConnectDone := make(chan error)
+			go func() {
+				portConnectDone <- re.browser.Connect()
+			}()
+			select {
+			case err := <-portConnectDone:
+				if err == nil {
+					verifyDone := make(chan bool)
+					go func() {
+						_, e := re.browser.Pages()
+						verifyDone <- (e == nil)
+					}()
+					select {
+					case ok := <-verifyDone:
+						if ok {
+							re.controlURL = portURL
+							log.Printf("[rod] browser reconnected via DevToolsActivePort: %s", portURL)
+							return nil
+						}
+					case <-time.After(3 * time.Second):
+					}
+				}
+			case <-time.After(3 * time.Second):
+			}
+			log.Printf("[rod] DevToolsActivePort reconnect failed")
+		}
+		log.Printf("[rod] killing stale chrome processes and launching new browser")
+		killChromeProcesses(re.userDataDir)
+		time.Sleep(2 * time.Second)
 	} else {
 		log.Printf("[rod] browser not initialized, attempting launch")
+		if re.userDataDir == "" {
+			re.userDataDir = "./.browser-data"
+		}
 	}
 
 	re.mu.Lock()
 	re.pages = make(map[string]*rod.Page)
 	re.mu.Unlock()
 
-	if re.userDataDir == "" {
-		re.userDataDir = "./.browser-data"
-	}
 	cleanupLockFiles(re.userDataDir)
 
 	l := createLauncher(re.userDataDir)
@@ -72,6 +141,7 @@ func (re *RodEngine) ensureBrowser() error {
 		return fmt.Errorf("connect browser: %w", err)
 	}
 	log.Printf("[rod] browser connected successfully")
+	re.startTabGuard()
 	return nil
 }
 
@@ -130,10 +200,61 @@ func cleanupLockFiles(userDataDir string) {
 		"DevToolsActivePort",
 	}
 	for _, f := range lockFiles {
-		path := userDataDir + string(os.PathSeparator) + f
+		path := filepath.Join(userDataDir, f)
 		_ = os.Remove(path)
 	}
 	log.Printf("[rod] cleaned up lock files in %s", userDataDir)
+}
+
+func readDevToolsActivePort(userDataDir string) string {
+	data, err := os.ReadFile(filepath.Join(userDataDir, "DevToolsActivePort"))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 1 {
+		return ""
+	}
+	port := strings.TrimSpace(lines[0])
+	if port == "" {
+		return ""
+	}
+	return "http://127.0.0.1:" + port
+}
+
+func killChromeProcesses(userDataDir string) {
+	cmd := exec.Command("tasklist", "/FI", "IMAGENAME eq chrome.exe", "/FO", "CSV", "/NH")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(out), "\n")
+	absDir, _ := filepath.Abs(userDataDir)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, "chrome.exe") {
+			continue
+		}
+		fields := strings.Split(line, ",")
+		if len(fields) < 2 {
+			continue
+		}
+		pidStr := strings.Trim(fields[1], "\" ")
+		if pidStr == "" {
+			continue
+		}
+		checkCmd := exec.Command("wmic", "process", "where", "ProcessId="+pidStr, "get", "CommandLine", "/FORMAT:LIST")
+		checkOut, err := checkCmd.Output()
+		if err != nil {
+			continue
+		}
+		cmdLine := string(checkOut)
+		if strings.Contains(cmdLine, userDataDir) || strings.Contains(cmdLine, absDir) {
+			killCmd := exec.Command("taskkill", "/F", "/PID", pidStr)
+			_ = killCmd.Run()
+			log.Printf("[rod] killed chrome process %s using %s", pidStr, userDataDir)
+		}
+	}
 }
 
 func NewRodEngine(db *storage.DB) *RodEngine {
@@ -162,12 +283,78 @@ func NewRodEngine(db *storage.DB) *RodEngine {
 	}
 
 	log.Printf("[rod] browser connected successfully")
-	return &RodEngine{
+	re := &RodEngine{
 		browser:     browser,
 		db:          db,
 		pages:       make(map[string]*rod.Page),
 		controlURL:  u,
 		userDataDir: userDataDir,
+	}
+	re.startTabGuard()
+	return re
+}
+
+func (re *RodEngine) startTabGuard() {
+	re.browserMu.Lock()
+	if re.tabGuardStarted {
+		re.browserMu.Unlock()
+		return
+	}
+	re.tabGuardStarted = true
+	re.browserMu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			re.cleanupExtraTabs()
+		}
+	}()
+	log.Printf("[rod] tab guard started, will close non-main tabs every 2s")
+}
+
+func (re *RodEngine) cleanupExtraTabs() {
+	re.browserMu.Lock()
+	browser := re.browser
+	re.browserMu.Unlock()
+	if browser == nil {
+		return
+	}
+
+	pages, err := browser.Pages()
+	if err != nil {
+		return
+	}
+
+	mainIDs := make(map[string]bool)
+	re.mu.Lock()
+	for _, p := range re.pages {
+		if p == nil {
+			continue
+		}
+		mainIDs[string(p.TargetID)] = true
+	}
+	re.mu.Unlock()
+
+	closed := 0
+	for _, p := range pages {
+		if mainIDs[string(p.TargetID)] {
+			continue
+		}
+		info, err := p.Info()
+		if err != nil {
+			continue
+		}
+		url := info.URL
+		if url == "" || url == "about:blank" {
+			continue
+		}
+		log.Printf("[rod] tab guard: closing extra tab url=%s", url)
+		_ = p.Close()
+		closed++
+	}
+	if closed > 0 {
+		log.Printf("[rod] tab guard: closed %d extra tabs", closed)
 	}
 }
 
@@ -201,9 +388,14 @@ func (re *RodEngine) getOrCreatePage(site models.Site) (*rod.Page, error) {
 		return page, nil
 	}
 
+	if re.browser == nil {
+		return nil, fmt.Errorf("browser not connected for site %s", site.ID)
+	}
+
 	log.Printf("[rod] creating new page for site %s -> %s", site.ID, site.URL)
 	page, err := re.browser.Page(proto.TargetCreateTarget{URL: ""})
 	if err != nil {
+		re.browser = nil
 		return nil, fmt.Errorf("create page: %w", err)
 	}
 
@@ -285,7 +477,86 @@ func (re *RodEngine) getOrCreatePage(site models.Site) (*rod.Page, error) {
 				unobserve: function() {},
 				disconnect: function() {}
 			};
-	};
+		};
+
+		window.open = function(url) {
+			if (url) {
+				window.location.href = url;
+			}
+			return null;
+		};
+
+		document.addEventListener('click', function(e) {
+			var el = e.target;
+			while (el && el.tagName !== 'A') {
+				el = el.parentElement;
+			}
+			if (el && el.tagName === 'A') {
+				if (el.target === '_blank' || el.getAttribute('target') === '_blank') {
+					e.preventDefault();
+					if (el.href) {
+						window.location.href = el.href;
+					}
+				}
+			}
+		}, true);
+
+		var removeBlankTargets = function() {
+			var links = document.querySelectorAll('a[target="_blank"]');
+			for (var i = 0; i < links.length; i++) {
+				links[i].removeAttribute('target');
+			}
+		};
+		if (document.readyState === 'complete' || document.readyState === 'interactive') {
+			removeBlankTargets();
+		} else {
+			document.addEventListener('DOMContentLoaded', removeBlankTargets);
+		}
+		var observer = new MutationObserver(function() { removeBlankTargets(); });
+		try {
+			observer.observe(document.documentElement, {childList: true, subtree: true});
+		} catch(e) {}
+
+		var blockedPaths = ['/record', '/recording'];
+		var isBlockedURL = function(url) {
+			if (!url) return false;
+			try {
+				for (var b = 0; b < blockedPaths.length; b++) {
+					if (url.indexOf(blockedPaths[b]) >= 0) return true;
+				}
+			} catch(e) {}
+			return false;
+		};
+		var origPush = history.pushState ? history.pushState.bind(history) : null;
+		var origReplace = history.replaceState ? history.replaceState.bind(history) : null;
+		if (origPush) {
+			history.pushState = function(state, title, url) {
+				if (isBlockedURL(url)) return;
+				origPush(state, title, url);
+			};
+		}
+		if (origReplace) {
+			history.replaceState = function(state, title, url) {
+				if (isBlockedURL(url)) return;
+				origReplace(state, title, url);
+			};
+		}
+		try {
+			var origAssign = window.location.assign ? window.location.assign.bind(window.location) : null;
+			var origRep = window.location.replace ? window.location.replace.bind(window.location) : null;
+			if (origAssign) {
+				window.location.assign = function(url) {
+					if (isBlockedURL(url)) return;
+					origAssign(url);
+				};
+			}
+			if (origRep) {
+				window.location.replace = function(url) {
+					if (isBlockedURL(url)) return;
+					origRep(url);
+				};
+			}
+		} catch(e) {}
 	`
 	_, _ = proto.PageAddScriptToEvaluateOnNewDocument{Source: visibilityJs}.Call(page)
 
@@ -865,22 +1136,27 @@ func (re *RodEngine) submitPrompt(page *rod.Page, submitSelector string, inputSe
 						if (btns[j] === input) continue;
 						if (isInputRelated(btns[j])) continue;
 						if (btns[j].disabled) continue;
-						var rect = btns[j].getBoundingClientRect();
-						if (rect.width === 0 || rect.height === 0) continue;
-						var cls = (btns[j].getAttribute('class') || '').toLowerCase();
-						if (cls.indexOf('toggle') >= 0) continue;
-						if (cls.indexOf('setting') >= 0) continue;
-						if (cls.indexOf('menu') >= 0) continue;
-						if (cls.indexOf('upload') >= 0) continue;
-						if (cls.indexOf('file') >= 0) continue;
-						if (cls.indexOf('voice') >= 0) continue;
-						if (cls.indexOf('mic') >= 0) continue;
-						if (cls.indexOf('image') >= 0) continue;
-						if (cls.indexOf('attach') >= 0) continue;
-						if (cls.indexOf('sidebar') >= 0) continue;
-						if (cls.indexOf('nav') >= 0 && cls.indexOf('send') < 0) continue;
-						var hasSvg = btns[j].querySelector('svg') !== null;
-						candidates.push({el: btns[j], cls: cls.substring(0, 50), x: rect.x, hasSvg: hasSvg});
+					var rect = btns[j].getBoundingClientRect();
+					if (rect.width === 0 || rect.height === 0) continue;
+					var cls = (btns[j].getAttribute('class') || '').toLowerCase();
+					if (cls.indexOf('toggle') >= 0) continue;
+				if (cls.indexOf('setting') >= 0) continue;
+				if (cls.indexOf('menu') >= 0) continue;
+				if (cls.indexOf('upload') >= 0) continue;
+				if (cls.indexOf('file') >= 0) continue;
+				if (cls.indexOf('voice') >= 0) continue;
+				if (cls.indexOf('mic') >= 0) continue;
+				if (cls.indexOf('image') >= 0) continue;
+				if (cls.indexOf('picture') >= 0) continue;
+				if (cls.indexOf('zoom') >= 0) continue;
+				if (cls.indexOf('preview') >= 0) continue;
+				if (cls.indexOf('lightbox') >= 0) continue;
+				if (cls.indexOf('attach') >= 0) continue;
+				if (cls.indexOf('sidebar') >= 0) continue;
+				if (cls.indexOf('nav') >= 0 && cls.indexOf('send') < 0) continue;
+				if (btns[j].closest('table, figure, [class*="image"], [class*="picture"], [class*="zoom"], [class*="preview"], [class*="lightbox"]')) continue;
+					var hasSvg = btns[j].querySelector('svg') !== null;
+					candidates.push({el: btns[j], cls: cls.substring(0, 50), x: rect.x, hasSvg: hasSvg});
 					}
 					if (candidates.length > 0) {
 						var logged = candidates.map(function(c) {
@@ -941,9 +1217,199 @@ func (re *RodEngine) submitPrompt(page *rod.Page, submitSelector string, inputSe
 	return nil
 }
 
-func (re *RodEngine) getAnswerStatus(page *rod.Page, selector string, beforeCount int) (int, string) {
+func (re *RodEngine) ensureChatMode(page *rod.Page) {
+	result, err := page.Timeout(5 * time.Second).Eval(`() => {
+		var editor = document.querySelector('[contenteditable=true], textarea');
+		var editorText = editor ? (editor.getAttribute('data-placeholder') || editor.textContent || '').trim() : '';
+		var isDocMode = editorText.indexOf('搭结构') >= 0 || editorText.indexOf('文档') >= 0 || editorText.indexOf('文章') >= 0;
+		if (!isDocMode) return 'not doc mode, editorText="' + editorText.substring(0, 50) + '"';
+		var exactTargets = ['对话', '聊天', '主对话', '对话模式', '聊天模式'];
+		var containsTargets = ['改为对话', '直接回答', '切换为对话', '切换为聊天'];
+		var excludeWords = ['新建', '新对话', '新聊天', '历史', '搜索', '清空', '删除', '设置'];
+		var allEls = document.querySelectorAll('button, div[role=button], a, span[role=button], div[role=tab], li[role=tab], span, div');
+		var best = null;
+		var bestPri = 0;
+		for (var i = 0; i < allEls.length; i++) {
+			var el = allEls[i];
+			if (!el.click) continue;
+			var text = (el.innerText || el.textContent || '').trim();
+			if (text.length === 0 || text.length > 20) continue;
+			var aria = (el.getAttribute('aria-label') || '').trim();
+			var href = (el.getAttribute('href') || '').trim();
+			var rect = el.getBoundingClientRect();
+			if (rect.width === 0 || rect.height === 0) continue;
+			var cls = (el.getAttribute('class') || '').toLowerCase();
+			if (cls.indexOf('history') >= 0) continue;
+			if (cls.indexOf('suggestion') >= 0) continue;
+			var skip = false;
+			for (var e = 0; e < excludeWords.length; e++) {
+				if (text.indexOf(excludeWords[e]) >= 0) { skip = true; break; }
+			}
+			if (skip) continue;
+			var pri = 0;
+			for (var t = 0; t < exactTargets.length; t++) {
+				if (text === exactTargets[t]) { pri = 100; break; }
+			}
+			if (pri === 0) {
+				for (var t = 0; t < containsTargets.length; t++) {
+					if (text.indexOf(containsTargets[t]) >= 0) { pri = 90; break; }
+				}
+			}
+			if (pri === 0 && (aria === '对话' || aria === '聊天' || aria === 'chat')) pri = 80;
+			if (pri === 0 && (href.indexOf('/chat') >= 0 || href.indexOf('chat') >= 0) && text.indexOf('对话') >= 0) pri = 75;
+			if (pri > 0 && cls.indexOf('active') >= 0) {
+				return 'already active: ' + text + ' (cls=' + cls + ')';
+			}
+			if (pri > bestPri) { bestPri = pri; best = el; }
+		}
+		if (best && bestPri >= 75) {
+			var btext = (best.innerText || best.textContent || '').trim();
+			best.click();
+			return 'clicked: ' + btext + ' (pri=' + bestPri + ')';
+		}
+		return 'doc-mode but no mode toggle found';
+	}`)
+	if err != nil {
+		return
+	}
+	mode := result.Value.Str()
+	if strings.HasPrefix(mode, "clicked") || strings.HasPrefix(mode, "already active") {
+		log.Printf("[rod] ensureChatMode: %s", mode)
+		time.Sleep(1 * time.Second)
+		re.closeOverlays(page)
+	} else {
+		log.Printf("[rod] ensureChatMode: %s", mode)
+	}
+}
+
+func (re *RodEngine) closeOverlays(page *rod.Page) {
+	page.Eval(`() => {
+		function closeOverlays() {
+			var closeSelectors = [
+				'[class*="close"]', '[aria-label*="close"]', '[aria-label*="Close"]', '[class*="Close"]',
+				'[class*="cancel"]', '[class*="back"]', '[class*="dismiss"]',
+				'[class*="dialog-close"]', '[class*="modal-close"]', '[class*="lightbox-close"]',
+				'[class*="preview-close"]', '[class*="zoom-close"]', '[class*="image-close"]',
+				'[class*="enlarge-close"]', '[class*="fullscreen-close"]', '[class*="scale-close"]',
+				'svg[class*="close"]', 'button[class*="icon"][class*="close"]',
+				'[class*="close-btn"]', '[class*="closeBtn"]', '[class*="close_btn"]',
+				'[class*="mw-close"]', '[class*="mw-cancel"]', '[class*="mw-dismiss"]',
+				'[class*="meeting-close"]', '[class*="recorder-close"]',
+				'button[class*="mw"] [class*="close"]', '[class*="confirm-modal"] [class*="close"]',
+				'[class*="confirm-modal"] [class*="cancel"]', '[class*="confirm-modal"] button'
+			];
+			for (var s = 0; s < closeSelectors.length; s++) {
+				var els = document.querySelectorAll(closeSelectors[s]);
+				for (var i = 0; i < els.length; i++) {
+					var rect = els[i].getBoundingClientRect();
+					if (rect.width < 5 || rect.height < 5) continue;
+					var style = window.getComputedStyle(els[i]);
+					if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+					try { els[i].click(); } catch(e) { els[i].dispatchEvent(new MouseEvent('click', {bubbles: true})); }
+				}
+			}
+
+			var overlaySelectors = [
+				'[class*="modal"]', '[class*="dialog"]', '[class*="lightbox"]',
+				'[class*="preview"]', '[class*="image-viewer"]', '[class*="zoom-overlay"]',
+				'[class*="enlarge"]', '[class*="fullscreen"]', '[class*="scale-up"]',
+				'[class*="expand-view"]', '[class*="table-preview"]', '[class*="code-preview"]',
+				'[class*="image-zoom"]', '[class*="preview-wrap"]', '[class*="viewer"]',
+				'[role="dialog"]', '[class*="popup"]', '[class*="popover"]'
+			];
+			for (var oi = 0; oi < overlaySelectors.length; oi++) {
+				var overlays = document.querySelectorAll(overlaySelectors[oi]);
+				for (var j = 0; j < overlays.length; j++) {
+					var style = window.getComputedStyle(overlays[j]);
+					if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+					var z = style.zIndex;
+					if (z && parseInt(z) > 100) {
+						var closeBtn = overlays[j].querySelector('[class*="close"], [class*="cancel"], [class*="dismiss"], [class*="back"], [aria-label*="close"], button');
+						if (closeBtn) {
+							try { closeBtn.click(); } catch(e) { closeBtn.dispatchEvent(new MouseEvent('click', {bubbles: true})); }
+						}
+					}
+				}
+			}
+
+			var backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="overlay"], [class*="dimmer"], [class*="scrim"]');
+			for (var k = 0; k < backdrops.length; k++) {
+				var style = window.getComputedStyle(backdrops[k]);
+				if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+				var z = style.zIndex;
+				if (z && parseInt(z) > 50) {
+					try { backdrops[k].click(); } catch(e) {}
+				}
+			}
+
+			for (var e = 0; e < 3; e++) {
+				document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true}));
+				document.dispatchEvent(new KeyboardEvent('keyup', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true}));
+			}
+
+			var fixedOverlays = document.querySelectorAll('[style*="position: fixed"], [style*="position:fixed"]');
+			for (var fi = 0; fi < fixedOverlays.length; fi++) {
+				var style = window.getComputedStyle(fixedOverlays[fi]);
+				var z = parseInt(style.zIndex) || 0;
+				if (z > 1000 && style.display !== 'none') {
+					var closeBtn = fixedOverlays[fi].querySelector('[class*="close"], [class*="cancel"], button, [aria-label*="close"]');
+					if (closeBtn) {
+						try { closeBtn.click(); } catch(e2) {}
+					}
+				}
+			}
+
+			var confirmModals = document.querySelectorAll('[class*="confirm-modal"]');
+			for (var cm = 0; cm < confirmModals.length; cm++) {
+				var cmStyle = window.getComputedStyle(confirmModals[cm]);
+				if (cmStyle.display === 'none' || cmStyle.visibility === 'hidden') continue;
+				var btns = confirmModals[cm].querySelectorAll('button, [role=button], div[class*="btn"], span[class*="btn"]');
+				for (var bi = 0; bi < btns.length; bi++) {
+					var btxt = (btns[bi].innerText || btns[bi].textContent || '').trim();
+					if (btxt === '我知道了' || btxt === '确定' || btxt === 'OK' || btxt === '知道了' || btxt === '关闭') {
+						try { btns[bi].click(); } catch(e3) { btns[bi].dispatchEvent(new MouseEvent('click', {bubbles: true})); }
+						break;
+					}
+				}
+			}
+
+			var recorderPanels = document.querySelectorAll('[class*="expanded-recorder-container"], [class*="mw-container"], [class*="mw-main"]');
+			for (var rp = 0; rp < recorderPanels.length; rp++) {
+				var rpStyle = window.getComputedStyle(recorderPanels[rp]);
+				if (rpStyle.display === 'none' || rpStyle.visibility === 'hidden') continue;
+				var rpBtns = recorderPanels[rp].querySelectorAll('button, [role=button], div[class*="btn"], span[class*="btn"], [class*="close"], [class*="end"], [class*="stop"]');
+				for (var rb = 0; rb < rpBtns.length; rb++) {
+					var rbtxt = (rpBtns[rb].innerText || rpBtns[rb].textContent || '').trim();
+					var rbcls = (rpBtns[rb].getAttribute('class') || '').toLowerCase();
+					if (rbtxt === '结束' || rbtxt === '关闭' || rbtxt === '关闭录音' || rbtxt === '停止' || rbtxt === 'End' || rbtxt === 'Close' ||
+						rbcls.indexOf('close') >= 0 || rbcls.indexOf('end') >= 0 || rbcls.indexOf('stop') >= 0) {
+						try { rpBtns[rb].click(); } catch(e4) { rpBtns[rb].dispatchEvent(new MouseEvent('click', {bubbles: true})); }
+						break;
+					}
+				}
+			}
+
+			return 'ok';
+		}
+		return closeOverlays();
+	}`)
+}
+
+func (re *RodEngine) getAnswerStatus(page *rod.Page, selector string, beforeCount int, prompt string) (int, string) {
 	if selector == "" {
 		return 0, ""
+	}
+
+	snippetLen := 100
+	promptFirst := ""
+	promptLast := ""
+	if len(prompt) > 0 {
+		if len(prompt) > snippetLen {
+			promptFirst = prompt[:snippetLen]
+			promptLast = prompt[len(prompt)-snippetLen:]
+		} else {
+			promptFirst = prompt
+		}
 	}
 
 	js := fmt.Sprintf(`
@@ -952,16 +1418,40 @@ func (re *RodEngine) getAnswerStatus(page *rod.Page, selector string, beforeCoun
 			if (els.length === 0) return {count: 0, text: ''};
 			function isInThinking(el) {
 				var parent = el.parentElement;
-				for (var i = 0; i < 3 && parent; i++) {
+				for (var i = 0; i < 6 && parent; i++) {
 					var cls = (parent.getAttribute('class') || '').toLowerCase();
-					if (cls.indexOf('think-block') >= 0 || cls.indexOf('think-content') >= 0 ||
-						cls.indexOf('think_process') >= 0 || cls.indexOf('thinking-block') >= 0 ||
-						cls.indexOf('thinking-content') >= 0 || cls.indexOf('reasoning-block') >= 0 ||
-						cls.indexOf('reasoning-content') >= 0 || cls.indexOf('thought-block') >= 0) {
-						return true;
+					if (cls.indexOf('think') >= 0 || cls.indexOf('thinking') >= 0 ||
+						cls.indexOf('reasoning') >= 0 || cls.indexOf('thought') >= 0 ||
+						cls.indexOf('chain-of-thought') >= 0 || cls.indexOf('cot-block') >= 0 ||
+						cls.indexOf('inner-mono') >= 0 || cls.indexOf('analysis') >= 0 ||
+						cls.indexOf('deep-think') >= 0 || cls.indexOf('pre-think') >= 0 ||
+						cls.indexOf('mind') >= 0 || cls.indexOf('deduce') >= 0 ||
+						cls.indexOf('reflect') >= 0 || cls.indexOf('contemplate') >= 0) {
+						if (cls.indexOf('thinker') < 0 && cls.indexOf('do-not-think') < 0) {
+							return true;
+						}
+					}
+					var tag = parent.tagName;
+					if (tag === 'DETAILS') {
+						var sum = parent.querySelector('summary');
+						if (sum) {
+							var st = (sum.textContent || '').toLowerCase();
+							if (st.indexOf('思考') >= 0 || st.indexOf('think') >= 0 ||
+								st.indexOf('reason') >= 0 || st.indexOf('分析') >= 0) {
+								return true;
+							}
+						}
 					}
 					parent = parent.parentElement;
 				}
+				return false;
+			}
+			var promptFirst = %q;
+			var promptLast = %q;
+			function isPromptText(text) {
+				if (!text) return false;
+				if (promptFirst && text.indexOf(promptFirst) >= 0 && text.length < promptFirst.length + 300) return true;
+				if (promptLast && promptLast !== promptFirst && text.indexOf(promptLast) >= 0 && text.length < promptLast.length + 300) return true;
 				return false;
 			}
 			var startIdx = Math.min(%d, els.length);
@@ -969,18 +1459,20 @@ func (re *RodEngine) getAnswerStatus(page *rod.Page, selector string, beforeCoun
 			for (var i = startIdx; i < els.length; i++) {
 				if (isInThinking(els[i])) continue;
 				var t = (els[i].innerText || els[i].textContent || '').trim();
+				if (isPromptText(t)) continue;
 				if (t.length > maxText.length) maxText = t;
 			}
 			if (!maxText) {
 				for (var i = startIdx; i < els.length; i++) {
 					var t = (els[i].innerText || els[i].textContent || '').trim();
+					if (isPromptText(t)) continue;
 					if (t.length > maxText.length) maxText = t;
 				}
 			}
 			if (!maxText && startIdx > 0) {
 				if (startIdx >= els.length) {
 					var lastEl = els[els.length - 1];
-					if (lastEl && !isInThinking(lastEl)) {
+					if (lastEl && !isInThinking(lastEl) && !isPromptText((lastEl.innerText || lastEl.textContent || '').trim())) {
 						maxText = (lastEl.innerText || lastEl.textContent || '').trim();
 					}
 					if (!maxText && lastEl) {
@@ -988,27 +1480,23 @@ func (re *RodEngine) getAnswerStatus(page *rod.Page, selector string, beforeCoun
 					}
 					if (!maxText) {
 						var prevEl = els.length >= 2 ? els[els.length - 2] : null;
-						if (prevEl && !isInThinking(prevEl)) {
+						if (prevEl && !isInThinking(prevEl) && !isPromptText((prevEl.innerText || prevEl.textContent || '').trim())) {
 							maxText = (prevEl.innerText || prevEl.textContent || '').trim();
 						}
 					}
 				} else {
-					for (var i = 0; i < els.length; i++) {
-						if (isInThinking(els[i])) continue;
-						var t = (els[i].innerText || els[i].textContent || '').trim();
-						if (t.length > maxText.length) maxText = t;
+					var lastEl = els[els.length - 1];
+					if (lastEl && !isInThinking(lastEl) && !isPromptText((lastEl.innerText || lastEl.textContent || '').trim())) {
+						maxText = (lastEl.innerText || lastEl.textContent || '').trim();
 					}
-					if (!maxText) {
-						for (var i = 0; i < els.length; i++) {
-							var t = (els[i].innerText || els[i].textContent || '').trim();
-							if (t.length > maxText.length) maxText = t;
-						}
+					if (!maxText && lastEl) {
+						maxText = (lastEl.innerText || lastEl.textContent || '').trim();
 					}
 				}
 			}
-			return {count: els.length, text: maxText.substring(0, 5000)};
+			return {count: els.length, text: maxText};
 		}
-	`, selector, beforeCount)
+	`, selector, promptFirst, promptLast, beforeCount)
 	result, err := page.Timeout(5 * time.Second).Eval(js)
 	if err != nil {
 		return 0, ""
@@ -1038,7 +1526,14 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 
 	page, err := re.getOrCreatePage(site)
 	if err != nil {
-		return "", fmt.Errorf("get page: %w", err)
+		log.Printf("[rod] getOrCreatePage failed, retrying after browser check: %v", err)
+		if retryErr := re.ensureBrowser(); retryErr != nil {
+			return "", fmt.Errorf("browser health check on retry: %w", retryErr)
+		}
+		page, err = re.getOrCreatePage(site)
+		if err != nil {
+			return "", fmt.Errorf("get page: %w", err)
+		}
 	}
 
 	if sels.Answer == "" {
@@ -1083,8 +1578,50 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	}
 	time.Sleep(1 * time.Second)
 
-	beforeCount, beforeText := re.getAnswerStatus(page, sels.Answer, 0)
+	re.closeOverlays(page)
+
+	re.ensureChatMode(page)
+
+	preDiagJs := fmt.Sprintf(`() => {
+		var el = document.querySelector(%q);
+		var url = window.location.href;
+		var allCE = document.querySelectorAll('[contenteditable=true]').length;
+		var allTextarea = document.querySelectorAll('textarea').length;
+		return JSON.stringify({found: !!el, url: url, ceCount: allCE, textareaCount: allTextarea});
+	}`, sels.Input)
+	if preDiagResult, preDiagErr := page.Timeout(5 * time.Second).Eval(preDiagJs); preDiagErr == nil {
+		diagStr := preDiagResult.Value.Str()
+		log.Printf("[rod] pre-typePrompt diag: %s", diagStr)
+		if strings.Contains(site.URL, "/chat") && strings.Contains(diagStr, `"url":"`) {
+			urlStart := strings.Index(diagStr, `"url":"`) + 7
+			urlEnd := strings.Index(diagStr[urlStart:], `"`) + urlStart
+			currentURL := diagStr[urlStart:urlEnd]
+			if !strings.Contains(currentURL, "/chat") {
+				log.Printf("[rod] page navigated away from chat (now %s), navigating back to %s", currentURL, site.URL)
+				if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
+					_ = page.WaitLoad()
+					_ = page.WaitIdle(3 * time.Second)
+					re.refreshPageAfterNavigation(page)
+					re.closeOverlays(page)
+					time.Sleep(1 * time.Second)
+				}
+			}
+		}
+	} else {
+		log.Printf("[rod] pre-typePrompt diag failed: %v", preDiagErr)
+	}
+
+	beforeCount, beforeText := re.getAnswerStatus(page, sels.Answer, 0, prompt)
 	log.Printf("[rod] answer count before sending: %d textLen=%d", beforeCount, len(beforeText))
+
+	promptFirst := ""
+	promptLast := ""
+	if len(prompt) > 100 {
+		promptFirst = prompt[:100]
+		promptLast = prompt[len(prompt)-100:]
+	} else {
+		promptFirst = prompt
+	}
 
 	if err := re.typePrompt(page, sels.Input, prompt); err != nil {
 		return "", fmt.Errorf("type prompt: %w", err)
@@ -1172,9 +1709,44 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	}
 
 	if postAnswerCount > beforeCount {
-		log.Printf("[rod] answer count increased after submit (%d -> %d), updating beforeCount to exclude user message", beforeCount, postAnswerCount)
-		beforeCount = postAnswerCount
-		_, beforeText = re.getAnswerStatus(page, sels.Answer, beforeCount)
+		// New elements appeared right after submit. These are usually user-message
+		// echoes that match the answer selector. Only skip them when they actually
+		// contain the prompt text; otherwise they may be the AI answer already
+		// rendering (e.g. fast sites), and skipping would lose the response.
+		checkPromptJs := fmt.Sprintf(`
+			() => {
+				var els = document.querySelectorAll(%q);
+				var promptFirst = %q;
+				var promptLast = %q;
+				var start = Math.min(%d, els.length);
+				var end = Math.min(%d, els.length);
+				var userMsgCount = 0;
+				for (var i = start; i < end; i++) {
+					var t = (els[i].innerText || els[i].textContent || '').trim();
+					if ((promptFirst && t.indexOf(promptFirst) >= 0 && t.length < promptFirst.length + 300) ||
+						(promptLast && promptLast !== promptFirst && t.indexOf(promptLast) >= 0 && t.length < promptLast.length + 300)) {
+						userMsgCount++;
+					}
+				}
+				return {newCount: end - start, userMsgCount: userMsgCount};
+			}
+		`, sels.Answer, promptFirst, promptLast, beforeCount, postAnswerCount)
+		newIsUser := false
+		if checkRes, checkErr := page.Timeout(3*time.Second).Eval(checkPromptJs); checkErr == nil {
+			newCount := checkRes.Value.Get("newCount").Int()
+			userMsgCount := checkRes.Value.Get("userMsgCount").Int()
+			if newCount > 0 && userMsgCount == newCount {
+				newIsUser = true
+			}
+			log.Printf("[rod] post-submit new elements: %d, user-msg-like: %d", newCount, userMsgCount)
+		}
+		if newIsUser {
+			log.Printf("[rod] answer count increased after submit (%d -> %d) and new elements are user messages, updating beforeCount", beforeCount, postAnswerCount)
+			beforeCount = postAnswerCount
+			_, beforeText = re.getAnswerStatus(page, sels.Answer, beforeCount, prompt)
+		} else {
+			log.Printf("[rod] answer count increased (%d -> %d) but new elements do not look like user messages, keeping beforeCount to avoid skipping the AI answer", beforeCount, postAnswerCount)
+		}
 	}
 
 	if postAnswerCount == beforeCount && strings.Contains(postEditorText, prompt[:min(5, len(prompt))]) {
@@ -1346,10 +1918,30 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		}
 		pollCount++
 
-		currentCount, currentText := re.getAnswerStatus(page, sels.Answer, beforeCount)
+		if pollCount%10 == 0 {
+			re.closeOverlays(page)
+		}
+
+		currentCount, currentText := re.getAnswerStatus(page, sels.Answer, beforeCount, prompt)
 
 		if currentCount < beforeCount {
 			log.Printf("[rod] answer count decreased (%d -> %d), resetting baseline", beforeCount, currentCount)
+			re.closeOverlays(page)
+			if strings.Contains(site.URL, "/chat") {
+				if urlCheckRes, urlCheckErr := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlCheckErr == nil {
+					curURL := urlCheckRes.Value.Str()
+					if !strings.Contains(curURL, "/chat") {
+						log.Printf("[rod] page navigated away from chat during polling (now %s), navigating back to %s", curURL, site.URL)
+						if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
+							_ = page.WaitLoad()
+							_ = page.WaitIdle(3 * time.Second)
+							re.refreshPageAfterNavigation(page)
+							re.closeOverlays(page)
+							time.Sleep(1 * time.Second)
+						}
+					}
+				}
+			}
 			beforeCount = currentCount
 			beforeText = currentText
 			lastText = ""
@@ -1364,8 +1956,8 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 				var els = document.querySelectorAll(%q);
 				if (els.length > 0) {
 					els[els.length - 1].scrollIntoView({block: 'center'});
-					els[els.length - 1].click();
 				}
+				document.dispatchEvent(new Event('visibilitychange'));
 				window.dispatchEvent(new Event('focus'));
 				window.dispatchEvent(new Event('pageshow'));
 			}`, sels.Answer))
@@ -1517,6 +2109,22 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		}
 
 		if pollCount == 30 && (currentCount < beforeCount || (currentCount == 0 && beforeCount == 0)) {
+			re.closeOverlays(page)
+			if strings.Contains(site.URL, "/chat") {
+				if urlCheckRes2, urlCheckErr2 := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlCheckErr2 == nil {
+					curURL2 := urlCheckRes2.Value.Str()
+					if !strings.Contains(curURL2, "/chat") {
+						log.Printf("[rod] page navigated away during polling (now %s), navigating back to %s", curURL2, site.URL)
+						if navErr2 := page.Timeout(10 * time.Second).Navigate(site.URL); navErr2 == nil {
+							_ = page.WaitLoad()
+							_ = page.WaitIdle(3 * time.Second)
+							re.refreshPageAfterNavigation(page)
+							re.closeOverlays(page)
+							time.Sleep(1 * time.Second)
+						}
+					}
+				}
+			}
 		log.Printf("[rod] no viable answer elements after 30 polls (count=%d before=%d), trying fallback selectors", currentCount, beforeCount)
 		promptSnippet := prompt[:min(20, len(prompt))]
 		fbSelectors30 := []string{
@@ -1692,6 +2300,10 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 
 	continuePolling:
 
+		if pollCount%10 == 0 && pollCount > 0 {
+			re.closeOverlays(page)
+		}
+
 		if pollCount%20 == 0 {
 			log.Printf("[rod] still polling... count=%d before=%d poll=%d", currentCount, beforeCount, pollCount)
 		}
@@ -1701,17 +2313,68 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 
 	if lastText == "" {
 		log.Printf("[rod] poll timeout: no answer received within 120s (polls=%d)", pollCount)
+		timeoutDiagJs := `() => {
+			var results = [];
+			var allEls = document.querySelectorAll('div, section, article, pre, code, [class*=markdown], [class*=message], [class*=answer], [class*=response], [class*=content], [class*=bubble], [class*=reply]');
+			for (var i = 0; i < allEls.length && results.length < 30; i++) {
+				var el = allEls[i];
+				var text = (el.innerText || el.textContent || '').trim();
+				if (text.length < 10) continue;
+				var rect = el.getBoundingClientRect();
+				if (rect.width < 50 || rect.height < 20) continue;
+				var cls = (el.getAttribute('class') || '').substring(0, 80);
+				var tag = el.tagName;
+				var children = el.children.length;
+				results.push({tag: tag, cls: cls, textLen: text.length, text: text.substring(0, 80), children: children, x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height)});
+			}
+			results.sort(function(a, b) { return b.textLen - a.textLen; });
+			return JSON.stringify(results.slice(0, 20));
+		}`
+		if timeoutDiagResult, timeoutDiagErr := page.Timeout(5 * time.Second).Eval(timeoutDiagJs); timeoutDiagErr == nil {
+			log.Printf("[rod] poll timeout DOM diag: %s", timeoutDiagResult.Value.Str())
+		}
 		return "", errors.New("poll answer timeout: no answer received within 120s")
 	}
 
 done:
 	log.Printf("[rod] answer stabilized, extracting content (strategy=%s)", sels.ContentStrategy)
 
+	// Close any zoom/preview/modal overlays that may have opened during polling
+	// (e.g. Doubao enlarges a table/image when it gets clicked). If an overlay is
+	// covering the answer, the clipboard copy button search would click into the
+	// wrong element and capture the zoomed fragment instead of the full reply.
+	re.closeOverlays(page)
+
 	extractor := NewContentExtractor(sels.ContentStrategy, sels.CopyButton)
-	finalText, extractErr := extractor.Extract(page, sels.Answer, beforeCount, len(lastText))
+	finalText, extractErr := extractor.Extract(page, sels.Answer, beforeCount, len(lastText), prompt)
 	if extractErr != nil {
 		log.Printf("[rod] content extraction failed: %v, falling back to polling text", extractErr)
 		finalText = lastText
+	}
+
+	// Validate the extracted text actually corresponds to the answer the polling
+	// loop tracked. If the extractor grabbed a different (e.g. previous-turn)
+	// message, lastText and finalText will share no common substring. In that
+	// case prefer the html2md extractor (which is scoped by beforeCount) or fall
+	// back to the polling text. This prevents multi-turn mismatches where the
+	// clipboard copied an older message.
+	if len(lastText) > 50 && len(finalText) > 50 && finalText != lastText {
+		if !shareCommonSubstring(lastText, finalText, 20) {
+			log.Printf("[rod] extracted text does not match polling text (lastText=%d finalText=%d), re-trying with html2md extractor", len(lastText), len(finalText))
+			h2m := &HtmlToMarkdownExtractor{}
+			if h2mText, h2mErr := h2m.Extract(page, sels.Answer, beforeCount, len(lastText), prompt); h2mErr == nil && len(h2mText) > 50 {
+				if shareCommonSubstring(lastText, h2mText, 20) {
+					log.Printf("[rod] html2md re-extraction matches polling text (%d chars), using it", len(h2mText))
+					finalText = h2mText
+				} else if len(h2mText) > len(finalText) {
+					log.Printf("[rod] html2md re-extraction longer (%d chars) but no overlap; keeping original", len(h2mText))
+				}
+			}
+			if !shareCommonSubstring(finalText, lastText, 20) && len(lastText) > len(finalText) {
+				log.Printf("[rod] no extraction matched polling text; falling back to polling text (%d chars)", len(lastText))
+				finalText = lastText
+			}
+		}
 	}
 
 	if beforeCount == 0 && len(prompt) > 10 {
@@ -1782,13 +2445,21 @@ done:
 												var preM = preCls.match(/language-(\w+)/);
 												if (preM) codeLang = preM[1];
 												if (!codeLang && codeEl) {
-													var cc = codeEl.getAttribute('class') || '';
-													var cm = cc.match(/language-(\w+)/);
-													if (cm) codeLang = cm[1];
-												}
-												if (codeText.length > 0) {
-													result += '\n\x60\x60\x60' + codeLang + '\n' + codeText + '\n\x60\x60\x60\n\n';
-												}
+												var cc = codeEl.getAttribute('class') || '';
+												var cm = cc.match(/language-(\w+)/);
+												if (cm) codeLang = cm[1];
+											}
+											if (!codeLang && codeText.length > 0) {
+												if (/^\s*(def |import |from |print\(|class |if __name__)/.test(codeText)) codeLang = 'python';
+												else if (/^\s*(function |const |let |var |import |export )/.test(codeText)) codeLang = 'javascript';
+												else if (/^\s*(func |package )/.test(codeText)) codeLang = 'go';
+												else if (/^\s*(pub fn |fn |use |mod )/.test(codeText)) codeLang = 'rust';
+												else if (/^\s*(#include|#define|#ifndef)/.test(codeText)) codeLang = 'cpp';
+												else if (/\b(graph TD|graph LR|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|journey|pie)\b/.test(codeText)) codeLang = 'mermaid';
+											}
+											if (codeText.length > 0) {
+												result += '\n\x60\x60\x60' + codeLang + '\n' + codeText + '\n\x60\x60\x60\n\n';
+											}
 												break;
 											case 'ul': case 'ol':
 												var items = child.children;
@@ -1855,7 +2526,7 @@ done:
 							}
 							if (md) parts.push(md);
 						}
-						return parts.join('\\n\\n');
+						return parts.join('\n\n');
 					}`, sels.Answer, stripRes.Value.Str())
 					if reExtractRes, reErr := page.Timeout(10*time.Second).Eval(extractJs); reErr == nil {
 						reText := reExtractRes.Value.Str()
@@ -1870,6 +2541,8 @@ done:
 	}
 
 	log.Printf("[rod] answer received: %d chars, text=%q", len(finalText), finalText[:min(100, len(finalText))])
+
+	re.closeOverlays(page)
 
 	if re.db != nil {
 		cookies, err := page.Cookies(nil)
@@ -1891,19 +2564,96 @@ done:
 	return finalText, nil
 }
 
+// shareCommonSubstring reports whether a and b share a common substring of at
+// least minLen consecutive characters. Both inputs are normalised by stripping
+// markdown punctuation and whitespace so that a plain-text polling snapshot and
+// a markdown extraction of the same answer are recognised as matching.
+func shareCommonSubstring(a, b string, minLen int) bool {
+	if len(a) < minLen || len(b) < minLen {
+		return false
+	}
+	strip := func(s string) string {
+		var sb strings.Builder
+		sb.Grow(len(s))
+		for _, r := range s {
+			switch r {
+			case ' ', '\t', '\n', '\r', '#', '*', '`', '_', '~', '|', '>', '-', '=', '[', ']', '(', ')', '!', '.', ',', ':', ';', '"', '\'', '\\', '/':
+				continue
+			}
+			sb.WriteRune(r)
+		}
+		return sb.String()
+	}
+	na := strip(a)
+	nb := strip(b)
+	if len(na) < minLen || len(nb) < minLen {
+		return false
+	}
+	for i := 0; i+minLen <= len(na); i += 4 {
+		sub := na[i : i+minLen]
+		if strings.Contains(nb, sub) {
+			return true
+		}
+	}
+	if len(na) >= minLen {
+		if strings.Contains(nb, na[:minLen]) {
+			return true
+		}
+		if strings.Contains(nb, na[len(na)-minLen:]) {
+			return true
+		}
+	}
+	return false
+}
+
 func (re *RodEngine) StartNewChat(site models.Site) error {
 	if err := re.ensureBrowser(); err != nil {
 		return fmt.Errorf("browser health check: %w", err)
 	}
 	page, err := re.getOrCreatePage(site)
 	if err != nil {
-		return err
+		log.Printf("[rod] getOrCreatePage failed in StartNewChat, retrying: %v", err)
+		if retryErr := re.ensureBrowser(); retryErr != nil {
+			return fmt.Errorf("browser health check on retry: %w", retryErr)
+		}
+		page, err = re.getOrCreatePage(site)
+		if err != nil {
+			return err
+		}
 	}
 	time.Sleep(2 * time.Second)
 
 	var sels Selectors
 	if site.Selectors != "" {
 		json.Unmarshal([]byte(site.Selectors), &sels)
+	}
+
+	if sels.Input != "" {
+		checkJs := fmt.Sprintf(`() => { return !!document.querySelector(%q); }`, sels.Input)
+		hasInput := false
+		for attempt := 0; attempt < 10; attempt++ {
+			if checkResult, checkErr := page.Timeout(2 * time.Second).Eval(checkJs); checkErr == nil && checkResult.Value.Bool() {
+				hasInput = true
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if hasInput {
+			log.Printf("[rod] StartNewChat: site %s already has input element %s, skipping new chat button", site.ID, sels.Input)
+			return nil
+		}
+	}
+
+	if strings.Contains(site.URL, "/chat") {
+		log.Printf("[rod] StartNewChat: site %s has /chat URL, navigating directly to %s instead of clicking buttons", site.ID, site.URL)
+		if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
+			_ = page.WaitLoad()
+			_ = page.WaitIdle(3 * time.Second)
+			re.refreshPageAfterNavigation(page)
+			re.closeOverlays(page)
+			time.Sleep(1 * time.Second)
+		}
+		return nil
 	}
 
 	clicked := false
@@ -1929,25 +2679,25 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 	if !clicked {
 		beforeNewCount := 0
 		if sels.Answer != "" {
-			beforeNewCount, _ = re.getAnswerStatus(page, sels.Answer, 0)
+			beforeNewCount, _ = re.getAnswerStatus(page, sels.Answer, 0, "")
 		}
 
 		searchJs := `
 			() => {
-				var keywords = ['新建对话', '新建会话', '新对话', '新会话', 'New Chat', 'New chat', 'new chat', '开启新对话', '发起新对话', '新聊天', '创建新对话', '新建聊天'];
-				var classKeywords = ['new-chat', 'newchat', 'new_chat', 'new-conversation', 'sidebar-new', 'new-dialog', 'new-talk', 'chat-new', 'start-new', 'create-new', 'add-chat', 'newsession', 'new-session'];
-				var candidates = document.querySelectorAll('button, a, div[role=button], [class*=new], [class*=chat], [aria-label], [title]');
-				var matches = [];
-				var allCandidates = [];
-				for (var i = 0; i < candidates.length; i++) {
-					var el = candidates[i];
+				var keywords = ['新建对话', '新建会话', '新对话', '新会话', '新聊天', '新建聊天', '开启新对话', '发起新对话', '创建新对话', 'New Chat', 'New chat', 'new chat'];
+			var classKeywords = ['new-chat', 'newchat', 'new_chat', 'new-conversation', 'sidebar-new', 'new-dialog', 'new-talk', 'chat-new', 'start-new', 'create-new', 'add-chat', 'newsession', 'new-session'];
+			var candidates = document.querySelectorAll('button, a, div[role=button]');
+			var matches = [];
+			var allCandidates = [];
+			for (var i = 0; i < candidates.length; i++) {
+				var el = candidates[i];
 					var text = (el.innerText || el.textContent || '').trim();
 					var ariaLabel = (el.getAttribute('aria-label') || '').trim();
 					var title = (el.getAttribute('title') || '').trim();
 					var cls = (el.getAttribute('class') || '').toLowerCase();
 					var href = (el.getAttribute('href') || '').toLowerCase();
 					var allText = (text + ' ' + ariaLabel + ' ' + title).toLowerCase();
-					if (allText.trim().length === 0 && cls.indexOf('new') < 0 && href === '') continue;
+					if (allText.trim().length === 0) continue;
 					if (text.length > 30) continue;
 					if (allCandidates.length < 10) {
 						allCandidates.push({tag: el.tagName, cls: (el.getAttribute('class') || '').substring(0, 50), text: text.substring(0, 20), aria: ariaLabel.substring(0, 20), href: href.substring(0, 30)});
@@ -2016,7 +2766,7 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 				} else {
 					log.Printf("[rod] new chat element off-screen (%.0f, %.0f), using JS click fallback", x, y)
 					jsClickRes, jsClickErr := page.Eval(`() => {
-						var keywords = ['新建对话', '新建会话', '新对话', '新会话', 'New Chat', 'New chat', 'new chat', '开启新对话', '发起新对话', '新聊天', '创建新对话', '新建聊天'];
+						var keywords = ['新建对话', '新建会话', '新对话', '新会话', '新聊天', '新建聊天', '开启新对话', '发起新对话', '创建新对话', 'New Chat', 'New chat', 'new chat'];
 						var classKeywords = ['new-chat', 'newchat', 'new_chat', 'new-conversation', 'sidebar-new', 'new-dialog', 'new-talk', 'chat-new', 'start-new', 'create-new', 'add-chat', 'newsession', 'new-session'];
 						var btns = document.querySelectorAll('button, a, div[role=button]');
 						for (var i = 0; i < btns.length; i++) {
@@ -2059,13 +2809,13 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 		if clicked {
 			time.Sleep(3 * time.Second)
 			if sels.Answer != "" {
-				afterNewCount, _ := re.getAnswerStatus(page, sels.Answer, 0)
-				if afterNewCount < beforeNewCount {
+			afterNewCount, _ := re.getAnswerStatus(page, sels.Answer, 0, "")
+			if afterNewCount < beforeNewCount {
 					log.Printf("[rod] new chat verified for site %s: answer count %d -> %d", site.ID, beforeNewCount, afterNewCount)
 				} else if beforeNewCount > 0 {
 					log.Printf("[rod] new chat may not have worked for site %s: answer count %d -> %d, trying JS click", site.ID, beforeNewCount, afterNewCount)
 					page.Eval(`() => {
-						var keywords = ['新建对话', '新建会话', '新对话', '新会话', 'New Chat', 'New chat', 'new chat', '开启新对话', '发起新对话', '新聊天', '创建新对话', '新建聊天'];
+						var keywords = ['新建对话', '新建会话', '新对话', '新会话', '新聊天', '新建聊天', '开启新对话', '发起新对话', '创建新对话', 'New Chat', 'New chat', 'new chat'];
 						var btns = document.querySelectorAll('button, a, div[role=button]');
 						for (var i = 0; i < btns.length; i++) {
 							var t = (btns[i].innerText || btns[i].textContent || '').trim().toLowerCase();
@@ -2078,10 +2828,10 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 							}
 						}
 						return 'not found';
-					}`)
-					time.Sleep(2 * time.Second)
-					afterNewCount2, _ := re.getAnswerStatus(page, sels.Answer, 0)
-					if afterNewCount2 >= beforeNewCount && beforeNewCount > 0 {
+				}`)
+				time.Sleep(2 * time.Second)
+				afterNewCount2, _ := re.getAnswerStatus(page, sels.Answer, 0, "")
+				if afterNewCount2 >= beforeNewCount && beforeNewCount > 0 {
 						log.Printf("[rod] new chat JS click also failed for site %s: answer count %d -> %d, falling back to navigation", site.ID, beforeNewCount, afterNewCount2)
 						clicked = false
 					}
@@ -2090,10 +2840,23 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 			if clicked {
 			_ = page.WaitIdle(5 * time.Second)
 			re.reinjectMocks(page)
+
+			urlCheckJs := `() => window.location.href`
+			if urlResult, urlErr := page.Timeout(3 * time.Second).Eval(urlCheckJs); urlErr == nil {
+				currentURL := urlResult.Value.Str()
+				if strings.Contains(site.URL, "/chat") && !strings.Contains(currentURL, "/chat") {
+					log.Printf("[rod] new chat: page navigated away from chat URL (now %s), navigating back to %s", currentURL, site.URL)
+					if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
+						_ = page.WaitLoad()
+						_ = page.WaitIdle(3 * time.Second)
+						re.refreshPageAfterNavigation(page)
+					}
+				}
+			}
 			return nil
 		}
 	}
-	}
+}
 
 	log.Printf("[rod] new chat: navigating to %s for site %s", site.URL, site.ID)
 	if err := page.Navigate(site.URL); err != nil {

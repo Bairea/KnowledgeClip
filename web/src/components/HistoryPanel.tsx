@@ -87,13 +87,13 @@ export default function HistoryPanel({
 
   if (collapsed) {
     return (
-      <div className="flex w-10 flex-col items-center border-r border-slate-700 bg-slate-900 py-3">
+      <div className="flex w-10 flex-col items-center border-r border-[var(--line)] bg-[var(--surface)] py-3">
         <button
           type="button"
           onClick={onToggleCollapse}
           aria-label="展开历史记录"
           title="展开历史记录"
-          className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-white"
+          className="flex h-8 w-8 items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--paper-dark)] hover:text-[var(--ink-soft)]"
         >
           <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
             <path
@@ -108,62 +108,65 @@ export default function HistoryPanel({
   }
 
   return (
-    <div className="flex flex-col border-r border-slate-700 bg-slate-900" style={{ width: `${width}px` }}>
-      <div className="flex h-12 items-center justify-between border-b border-slate-700 px-4">
-        <span className="text-sm font-semibold text-slate-200">历史记录</span>
+    <div className="flex flex-col border-r border-[var(--line)] bg-[var(--surface)]" style={{ width: `${width}px` }}>
+      <div className="flex h-12 items-center justify-between border-b border-[var(--line)] px-4">
+        <div className="flex items-baseline gap-2">
+          <span className="font-display text-[14px] font-semibold text-[var(--ink)]">历史记录</span>
+          <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--ink-faint)]">archive</span>
+        </div>
         <div className="flex items-center gap-1">
           {!manageMode ? (
             <button
-              type="button"
-              onClick={() => setManageMode(true)}
-              className="rounded px-2 py-0.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
-            >
-              管理
-            </button>
-          ) : null}
-          <button
             type="button"
-            onClick={onToggleCollapse}
-            aria-label="收起历史记录"
-            title="收起历史记录"
-            className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-white"
+            onClick={() => setManageMode(true)}
+            className="px-2 py-0.5 font-ui text-[11px] text-[var(--ink-muted)] hover:bg-[var(--paper-soft)] hover:text-[var(--ink-soft)]"
           >
-            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M12.79 5.23a.75.75 0 0 1-.02 1.06L8.832 10l3.938 3.71a.75.75 0 1 1-1.04 1.08l-4.5-4.25a.75.75 0 0 1 0-1.08l4.5-4.25a.75.75 0 0 1 1.06.02Z"
-                clipRule="evenodd"
-              />
-            </svg>
+            管理
           </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          aria-label="收起历史记录"
+          title="收起历史记录"
+          className="flex h-6 w-6 items-center justify-center text-[var(--ink-muted)] hover:bg-[var(--paper-soft)] hover:text-[var(--ink-soft)]"
+        >
+          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path
+              fillRule="evenodd"
+              d="M12.79 5.23a.75.75 0 0 1-.02 1.06L8.832 10l3.938 3.71a.75.75 0 1 1-1.04 1.08l-4.5-4.25a.75.75 0 0 1 0-1.08l4.5-4.25a.75.75 0 0 1 1.06.02Z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
         </div>
       </div>
 
       {manageMode && (
-        <div className="flex items-center justify-between border-b border-slate-700 px-3 py-2">
+        <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2">
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={selected.size === sessions.length ? selectNone : selectAll}
-              className="text-xs text-slate-400 hover:text-white"
+              className="font-ui text-[11px] text-[var(--ink-muted)] hover:text-[var(--ink)]"
             >
               {selected.size === sessions.length ? '取消全选' : '全选'}
             </button>
-            <span className="text-xs text-slate-500">已选 {selected.size}</span>
+            <span className="font-mono tabular text-[10px] uppercase tracking-[0.08em] text-[var(--ink-faint)]">已选 {selected.size}</span>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleDelete}
               disabled={selected.size === 0}
-              className="rounded bg-red-700 px-2 py-1 text-xs font-medium text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+              className="bg-[var(--danger)] px-2 py-1 font-ui text-[11px] font-medium text-[var(--accent-ink)] hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
             >
               删除
             </button>
             <button
               type="button"
               onClick={exitManage}
-              className="rounded px-2 py-1 text-xs text-slate-400 hover:text-white"
+              className="px-2 py-1 font-ui text-[11px] text-[var(--ink-muted)] hover:text-[var(--ink)]"
             >
               取消
             </button>
@@ -173,27 +176,28 @@ export default function HistoryPanel({
 
       <div className="flex-1 overflow-auto p-2">
         {loading && (
-          <div className="px-2 py-4 text-center text-sm text-slate-400">加载中...</div>
+          <div className="px-2 py-4 text-center font-ui text-[12px] text-[var(--ink-muted)]">加载中...</div>
         )}
         {error && (
-          <div className="px-2 py-4 text-center text-sm text-red-400">{error}</div>
+          <div className="px-2 py-4 text-center font-ui text-[12px] text-[var(--danger)]">{error}</div>
         )}
         {!loading && !error && sessions.length === 0 && (
-          <div className="px-2 py-4 text-center text-sm text-slate-400">暂无记录</div>
+          <div className="px-2 py-4 text-center font-ui text-[12px] text-[var(--ink-muted)]">暂无记录</div>
         )}
         {sessions.map((session) => {
           const isSelected = selected.has(session.id)
+          const isCurrent = currentSessionId === session.id
           return (
             <div
               key={session.id}
-              className={`flex items-center gap-2 rounded-md px-2 py-2 transition-colors ${
+              className={`flex items-center gap-2 px-2 py-2 transition-colors ${
                 manageMode
                   ? isSelected
-                    ? 'bg-slate-700'
-                    : 'hover:bg-slate-800'
-                  : currentSessionId === session.id
-                    ? 'bg-slate-700'
-                    : 'hover:bg-slate-800'
+                    ? 'bg-[var(--accent-soft)]'
+                    : 'hover:bg-[var(--paper-soft)]'
+                  : isCurrent
+                    ? 'border-l-2 border-[var(--accent)] bg-[var(--paper-soft)]'
+                    : 'border-l-2 border-transparent hover:bg-[var(--paper-soft)]'
               }`}
             >
               {manageMode && (
@@ -201,7 +205,7 @@ export default function HistoryPanel({
                   type="checkbox"
                   checked={isSelected}
                   onChange={() => toggleSelect(session.id)}
-                  className="h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-800 text-blue-500"
+                  className="h-4 w-4 shrink-0 border-[var(--line-strong)] bg-[var(--paper)] text-[var(--accent)] focus:ring-[var(--accent)]"
                 />
               )}
               <button
@@ -210,20 +214,20 @@ export default function HistoryPanel({
                   if (!manageMode) onSelectSession(session.id)
                 }}
                 disabled={manageMode}
-                className="flex-1 text-left text-sm disabled:cursor-default"
+                className="flex-1 text-left disabled:cursor-default"
               >
                 <div
-                  className={`font-medium ${
+                  className={`font-reading text-[13px] leading-[1.4] ${
                     manageMode
-                      ? 'text-slate-300'
-                      : currentSessionId === session.id
-                        ? 'text-white'
-                        : 'text-slate-300'
+                      ? 'text-[var(--ink-soft)]'
+                      : isCurrent
+                        ? 'text-[var(--ink)] font-medium'
+                        : 'text-[var(--ink-soft)]'
                   }`}
                 >
                   {truncate(session.prompt, 40)}
                 </div>
-                <div className="mt-1 text-xs text-slate-400">
+                <div className="mt-1 font-mono tabular text-[10px] uppercase tracking-[0.06em] text-[var(--ink-faint)]">
                   {new Date(session.created_at).toLocaleString()}
                 </div>
               </button>

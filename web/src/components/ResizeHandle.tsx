@@ -54,16 +54,16 @@ export default function ResizeHandle({ direction, onResize, min, max, current }:
     <div
       data-resize-handle={direction}
       onMouseDown={handleMouseDown}
-      className={`group relative z-10 flex shrink-0 items-center justify-center bg-slate-700 transition-colors hover:bg-slate-500 ${
+      className={`group relative z-10 flex shrink-0 items-center justify-center bg-[var(--line-soft)] transition-colors hover:bg-[var(--line)] ${
         isHorizontal ? 'w-1 cursor-col-resize' : 'h-1 cursor-row-resize'
-      } ${isDragging ? 'bg-slate-400' : ''}`}
+      } ${isDragging ? 'bg-[var(--line)]' : ''}`}
     >
       <div
-        className={`bg-slate-500 transition-colors group-hover:bg-slate-300 ${
+        className={`bg-[var(--ink-muted)] transition-colors group-hover:bg-[var(--ink-soft)] ${
           isHorizontal
-            ? 'h-8 w-0.5 rounded-full'
-            : 'h-0.5 w-8 rounded-full'
-        } ${isDragging ? 'bg-slate-200' : ''} ${isAtMin || isAtMax ? 'opacity-50' : 'opacity-60'}`}
+            ? 'h-10 w-px'
+            : 'h-px w-10'
+        } ${isDragging ? 'bg-[var(--accent)]' : ''} ${isAtMin || isAtMax ? 'opacity-30' : 'opacity-50'}`}
       />
     </div>
   )

@@ -134,37 +134,40 @@ export default function SiteConfigModal({ isOpen, editingSite, onClose, onSave }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-lg rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-xl">
-        <h2 className="mb-4 text-lg font-semibold text-white">
-          {isEditing ? '编辑站点' : '新增站点'}
-        </h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--ink)]/50 backdrop-blur-sm">
+      <div className="w-full max-w-lg border border-[var(--line)] bg-[var(--surface-raised)] p-6 shadow-2xl">
+        <div className="mb-5 flex items-baseline gap-2 border-b border-[var(--line)] pb-3">
+          <h2 className="font-display text-[18px] font-semibold text-[var(--ink)]">
+            {isEditing ? '编辑站点' : '新增站点'}
+          </h2>
+          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--ink-faint)]">config</span>
+        </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-300">名称</label>
+            <label className="mb-1 block font-ui text-[12px] font-medium text-[var(--ink-soft)]">名称</label>
             <input
               type="text"
               value={formData.name}
               onChange={(e) => handleChange('name', e.target.value)}
-              className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-slate-500 focus:outline-none"
+              className="w-full border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-ui text-[13px] text-[var(--ink)] placeholder-[var(--ink-faint)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-soft)]"
               placeholder="如：豆包"
               autoFocus
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-300">链接</label>
+            <label className="mb-1 block font-ui text-[12px] font-medium text-[var(--ink-soft)]">链接</label>
             <input
               type="text"
               value={formData.url}
               onChange={(e) => handleChange('url', e.target.value)}
-              className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-slate-500 focus:outline-none"
+              className="w-full border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-ui text-[13px] text-[var(--ink)] placeholder-[var(--ink-faint)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-soft)]"
               placeholder="https://www.doubao.com/chat/"
             />
             {detecting && (
-              <p className="mt-1 text-xs text-blue-400">正在自动检测选择器...</p>
+              <p className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--accent)]">正在自动检测选择器...</p>
             )}
             {autoDetected && !detecting && (
-              <p className="mt-1 text-xs text-green-400">选择器已自动检测</p>
+              <p className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--success)]">选择器已自动检测</p>
             )}
           </div>
 
@@ -172,7 +175,7 @@ export default function SiteConfigModal({ isOpen, editingSite, onClose, onSave }
             <button
               type="button"
               onClick={() => setShowAdvanced((v) => !v)}
-              className="text-xs text-slate-400 hover:text-slate-200"
+              className="font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--ink-muted)] hover:text-[var(--ink)]"
             >
               {showAdvanced ? '▼ 高级设置' : '▶ 高级设置'}
             </button>
@@ -181,68 +184,68 @@ export default function SiteConfigModal({ isOpen, editingSite, onClose, onSave }
           {showAdvanced && (
             <>
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-300">ID</label>
+                <label className="mb-1 block font-ui text-[12px] font-medium text-[var(--ink-soft)]">ID</label>
                 <input
                   type="text"
                   value={formData.id}
                   disabled={isEditing}
                   onChange={(e) => handleChange('id', e.target.value)}
-                  className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-slate-500 focus:outline-none disabled:opacity-60"
+                  className="w-full border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-mono text-[12px] text-[var(--ink)] placeholder-[var(--ink-faint)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-soft)] disabled:opacity-60"
                   placeholder="站点唯一标识（自动生成）"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-300">引擎类型</label>
+                <label className="mb-1 block font-ui text-[12px] font-medium text-[var(--ink-soft)]">引擎类型</label>
                 <select
                   value={formData.engine_type}
                   onChange={(e) => handleChange('engine_type', e.target.value)}
-                  className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white focus:border-slate-500 focus:outline-none"
+                  className="w-full border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-mono text-[12px] text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-soft)]"
                 >
                   <option value="cdp">cdp</option>
                   <option value="playwright">playwright</option>
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-300">Selectors (JSON)</label>
+                <label className="mb-1 block font-ui text-[12px] font-medium text-[var(--ink-soft)]">Selectors (JSON)</label>
                 <textarea
                   value={formData.selectors}
                   onChange={(e) => handleChange('selectors', e.target.value)}
                   rows={6}
-                  className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-slate-500 focus:outline-none"
+                  className="w-full border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-mono text-[12px] leading-[1.5] text-[var(--ink)] placeholder-[var(--ink-faint)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-soft)]"
                 />
                 <button
                   type="button"
                   onClick={handleDetect}
                   disabled={detecting || !formData.url}
-                  className="mt-1 rounded-md bg-slate-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-600 disabled:opacity-60"
+                  className="mt-1.5 border border-[var(--line)] bg-[var(--paper-dark)] px-3 py-1.5 font-ui text-[11px] font-medium text-[var(--ink-soft)] hover:border-[var(--ink-muted)] hover:text-[var(--ink)] disabled:opacity-60"
                 >
                   {detecting ? '检测中...' : '重新检测'}
                 </button>
               </div>
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-300">Format Prompt</label>
+                <label className="mb-1 block font-ui text-[12px] font-medium text-[var(--ink-soft)]">Format Prompt</label>
                 <textarea
                   value={formData.format_prompt}
                   onChange={(e) => handleChange('format_prompt', e.target.value)}
                   rows={3}
-                  className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-slate-500 focus:outline-none"
+                  className="w-full border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-reading text-[13px] leading-[1.5] text-[var(--ink)] placeholder-[var(--ink-faint)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-soft)]"
                 />
               </div>
             </>
           )}
 
-          <div className="flex justify-end gap-3 pt-2">
+          <div className="flex justify-end gap-3 border-t border-[var(--line)] pt-4">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-slate-600 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700"
+              className="border border-[var(--line)] bg-[var(--paper)] px-4 py-2 font-ui text-[13px] font-medium text-[var(--ink-soft)] hover:bg-[var(--paper-dark)] hover:text-[var(--ink)]"
             >
               取消
             </button>
             <button
               type="submit"
               disabled={detecting || !formData.name || !formData.url}
-              className="rounded-md bg-slate-600 px-4 py-2 text-sm font-medium text-white hover:bg-slate-500 disabled:opacity-60"
+              className="bg-[var(--accent)] px-4 py-2 font-ui text-[13px] font-medium text-[var(--accent-ink)] hover:bg-[var(--accent-hover)] disabled:opacity-60"
             >
               {detecting ? '保存中...' : '保存'}
             </button>

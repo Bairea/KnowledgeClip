@@ -1,3 +1,114 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    /* Editorial Reading Room — warm parchment + deep petrol teal */
+    --paper: #f3efe6;
+    --paper-soft: #ebe5d6;
+    --paper-dark: #ddd5bf;
+    --surface: #fbf8f1;
+    --surface-raised: #fffdf6;
+
+    --ink: #14110d;
+    --ink-soft: #2a2620;
+    --ink-muted: #6b6357;
+    --ink-faint: #9a9182;
+
+    --accent: #1d4d4f;
+    --accent-soft: #cddedb;
+    --accent-hover: #0f3738;
+    --accent-ink: #fbf8f1;
+
+    --line: #c9c0aa;
+    --line-soft: #e3ddc9;
+    --line-strong: #a89e84;
+
+    --danger: #8b2c2c;
+    --success: #2d5a3d;
+
+    --radius: 2px;
+    --radius-sm: 1px;
+    --radius-lg: 3px;
+
+    --code-bg: #1a1714;
+    --code-ink: #e8e2d0;
+    --code-line: #5c5447;
+    --code-border: #2a2620;
+  }
+
+  html {
+    font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'kern', 'liga', 'calt';
+  }
+
+  body {
+    background-color: var(--paper);
+    color: var(--ink);
+    font-synthesis: none;
+  }
+
+  ::selection {
+    background-color: var(--accent);
+    color: var(--accent-ink);
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Fraunces', 'IBM Plex Serif', Georgia, serif;
+    font-optical-sizing: auto;
+    font-variation-settings: 'SOFT' 30, 'WONK' 0;
+  }
+
+  .font-reading {
+    font-family: 'Fraunces', 'IBM Plex Serif', Georgia, serif;
+    font-optical-sizing: auto;
+    font-variation-settings: 'SOFT' 50, 'WONK' 0;
+  }
+
+  .font-ui {
+    font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  .font-mono {
+    font-family: 'IBM Plex Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  .editorial-rule {
+    background-image: linear-gradient(to right, transparent, var(--line-strong) 20%, var(--line-strong) 80%, transparent);
+    height: 1px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--line-strong);
+    border-radius: 0;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: var(--ink-muted);
+  }
+
+  .hairline {
+    border-color: var(--line);
+  }
+}

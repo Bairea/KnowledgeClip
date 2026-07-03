@@ -58,6 +58,7 @@ export default function App() {
   const [historyWidth, setHistoryWidth] = useState(256)
   const [sidebarWidth, setSidebarWidth] = useState(224)
   const [inputHeight, setInputHeight] = useState(80)
+  const [columnsPerRow, setColumnsPerRow] = useState(2)
 
   const currentTurnRef = useRef(0)
 
@@ -360,21 +361,24 @@ export default function App() {
   )
 
   return (
-    <div className="flex h-screen flex-col bg-slate-950 text-white">
-      <header className="flex h-12 items-center justify-between border-b border-slate-700 bg-slate-900 px-4">
-        <span className="text-lg font-semibold">Chat Aggregator</span>
-        <div className="flex items-center gap-3">
+    <div className="flex h-screen flex-col bg-[var(--paper)] text-[var(--ink)]">
+      <header className="flex h-12 items-center justify-between border-b border-[var(--line)] bg-[var(--surface)] px-4">
+        <div className="flex items-baseline gap-2">
+          <span className="font-display text-[17px] font-semibold tracking-[-0.015em] text-[var(--ink)]">Chat Aggregator</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--ink-faint)]">reading room</span>
+        </div>
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={handleNewChat}
-            className="rounded-md bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
+            className="border border-[var(--line)] bg-[var(--paper-soft)] px-3 py-1.5 font-ui text-[12px] font-medium text-[var(--ink-soft)] hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
           >
             New Chat
           </button>
           <button
             type="button"
             onClick={openNewSite}
-            className="rounded-md bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
+            className="bg-[var(--accent)] px-3 py-1.5 font-ui text-[12px] font-medium text-[var(--accent-ink)] hover:bg-[var(--accent-hover)]"
           >
             + New Site
           </button>
@@ -415,27 +419,58 @@ export default function App() {
           onResize={(delta) => setSidebarWidth((w) => Math.max(150, Math.min(400, w + delta)))}
         />
         <main className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex h-12 items-center justify-between border-b border-[var(--line)] bg-[var(--surface)] px-4">
+            <div className="flex items-baseline gap-2">
+              <span className="font-display text-[14px] font-semibold text-[var(--ink)]">对话</span>
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--ink-faint)]">conversation</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="mr-2 font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--ink-faint)]">columns</span>
+              {[1, 2, 3, 4].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setColumnsPerRow(n)}
+                  className={`h-6 w-6 font-mono text-[11px] font-medium ${
+                    columnsPerRow === n
+                      ? 'bg-[var(--accent)] text-[var(--accent-ink)]'
+                      : 'border border-transparent text-[var(--ink-muted)] hover:border-[var(--line)] hover:bg-[var(--paper-soft)] hover:text-[var(--ink)]'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="flex-1 overflow-auto">
             {turns.length === 0 && messages.length === 0 && (
-              <div className="flex h-full items-center justify-center text-slate-500">
-                <div className="text-center">
-                  <p className="text-lg font-medium">开始新对话</p>
-                  <p className="mt-2 text-sm">选择左侧站点，输入问题开始多轮对话</p>
+              <div className="flex h-full items-center justify-center">
+                <div className="max-w-md text-center">
+                  <div className="mx-auto mb-4 h-px w-12 bg-[var(--line-strong)]"></div>
+                  <p className="font-display text-[22px] font-semibold leading-tight text-[var(--ink)]">开始新对话</p>
+                  <p className="mt-3 font-reading text-[14px] leading-relaxed text-[var(--ink-muted)]">
+                    选择左侧站点，在下方输入问题。<br/>支持多轮对话，回答可标记保留后导出。
+                  </p>
+                  <div className="mx-auto mt-4 h-px w-12 bg-[var(--line-strong)]"></div>
                 </div>
               </div>
             )}
             {turns.map((turn) => (
-              <div key={turn.turn} className="border-b border-slate-800">
-                <div className="bg-slate-900/50 px-4 py-2">
-                  <span className="text-xs font-medium text-slate-400">你</span>
-                  <p className="mt-0.5 text-sm text-slate-200">{turn.prompt}</p>
+              <section key={turn.turn} className="border-b border-[var(--line)] last:border-b-0">
+                <div className="bg-[var(--paper-soft)] px-6 py-4">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)]">问</span>
+                    <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--ink-faint)]">turn {String(turn.turn).padStart(2, '0')}</span>
+                  </div>
+                  <p className="mt-1.5 font-reading text-[16px] leading-[1.65] text-[var(--ink)]">{turn.prompt}</p>
                 </div>
                 <ChatGrid
                   messages={messages.filter((m) => m.turn === turn.turn)}
                   sites={sites}
                   onToggleKeep={handleToggleKeep}
+                  columns={columnsPerRow}
                 />
-              </div>
+              </section>
             ))}
           </div>
           <ResizeHandle

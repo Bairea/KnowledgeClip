@@ -55,10 +55,12 @@ sites:
       engine:
         primary: cdp
         selectors:
-            answer: '[class*=markdown]'
+            answer: '.markdown-main-panel'
             content_strategy: clipboard
+            copy_button: ""
             input: '[contenteditable=true]'
-            wait_for: '[class*=markdown]:last-child'
+            submit: button[aria-label='发送']
+            wait_for: '.markdown-main-panel'
       format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
       cookie_file: ""
     - id: minimax
@@ -68,11 +70,11 @@ sites:
       engine:
         primary: cdp
         selectors:
-            answer: '[class*=markdown]'
+            answer: '[class*=message-animate-in]:not(.justify-end)'
             content_strategy: clipboard
             copy_button: ""
             input: '[data-testid=message-textarea]'
-            submit: ""
+            submit: 'button[class*="send"], button[type="submit"], [class*="send"] button, [aria-label*="发送"]'
             wait_for: '[data-testid=message-textarea]'
       format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
       cookie_file: ""
@@ -87,7 +89,7 @@ sites:
             content_strategy: clipboard
             copy_button: ""
             input: textarea
-            submit: div.enter-icon-container
+            submit: ""
             wait_for: textarea
       format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
       cookie_file: ""
@@ -98,11 +100,11 @@ sites:
       engine:
         primary: cdp
         selectors:
-            answer: '[class*=v_list_row]'
+            answer: '.md-box-root'
             content_strategy: clipboard
             copy_button: ""
-            input: 'textarea[placeholder*=发消息]'
-            submit: ""
-            wait_for: 'textarea[placeholder*=发消息]'
+            input: 'textarea'
+            submit: 'div[class*="send-button"]'
+            wait_for: 'textarea'
       format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
       cookie_file: ""

@@ -5,17 +5,17 @@ interface ChatGridProps {
   messages: Message[]
   sites: Site[]
   onToggleKeep: (id: string) => void
+  columns?: number
 }
 
-export default function ChatGrid({ messages, sites, onToggleKeep }: ChatGridProps) {
+export default function ChatGrid({ messages, sites, onToggleKeep, columns = 2 }: ChatGridProps) {
   const siteMap = new Map(sites.map((s) => [s.id, s.name]))
-  const count = messages.length
 
   const gridStyle = {
     display: 'grid',
-    gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))`,
-    gap: '0.75rem',
-    padding: '0.75rem',
+    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+    gap: '1.5rem',
+    padding: '1.5rem',
   }
 
   return (

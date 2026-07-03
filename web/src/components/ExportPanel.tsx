@@ -18,26 +18,26 @@ export default function ExportPanel({ sessionId }: ExportPanelProps) {
 
   return (
     <div className="flex items-center gap-2">
-      <label className="flex items-center gap-1 text-xs text-slate-300">
+      <label className="flex items-center gap-1.5 font-ui text-[11px] text-[var(--ink-soft)]">
         <input
           type="checkbox"
           checked={filterKept}
           onChange={(e) => setFilterKept(e.target.checked)}
-          className="h-3 w-3"
+          className="h-3 w-3 border-[var(--line-strong)] text-[var(--accent)] focus:ring-[var(--accent)]"
         />
         仅导出已保留
       </label>
       <button
         onClick={() => handleExport('json')}
-        className="rounded bg-slate-700 px-3 py-1 text-sm text-white hover:bg-slate-600"
+        className="border border-[var(--line)] bg-[var(--surface)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.06em] text-[var(--ink-soft)] hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
       >
-        Export JSON
+        JSON
       </button>
       <button
         onClick={() => handleExport('markdown')}
-        className="rounded bg-slate-700 px-3 py-1 text-sm text-white hover:bg-slate-600"
+        className="border border-[var(--line)] bg-[var(--surface)] px-3 py-1 font-mono text-[11px] uppercase tracking-[0.06em] text-[var(--ink-soft)] hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
       >
-        Export Markdown
+        Markdown
       </button>
     </div>
   )

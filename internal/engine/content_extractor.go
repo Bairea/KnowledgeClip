@@ -9,7 +9,7 @@ import (
 )
 
 type ContentExtractor interface {
-	Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int) (string, error)
+	Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int, prompt string) (string, error)
 }
 
 type ClipboardExtractor struct {
@@ -53,7 +53,7 @@ const clipboardOverrideJs = `
 	}
 `
 
-func (e *ClipboardExtractor) Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int) (string, error) {
+func (e *ClipboardExtractor) Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int, prompt string) (string, error) {
 	if _, err := page.Eval(clipboardOverrideJs); err != nil {
 		return "", fmt.Errorf("override clipboard: %w", err)
 	}
@@ -67,7 +67,7 @@ func (e *ClipboardExtractor) Extract(page *rod.Page, answerSelector string, befo
 		log.Printf("[rod] configured selector got %d chars, trying generic search", len(content))
 	}
 
-	return e.tryGenericCandidates(page, answerSelector, expectedLength)
+	return e.tryGenericCandidates(page, answerSelector, beforeCount, expectedLength, prompt)
 }
 
 func (e *ClipboardExtractor) tryClickBySelector(page *rod.Page, selector string) string {
@@ -90,18 +90,40 @@ func (e *ClipboardExtractor) tryClickBySelector(page *rod.Page, selector string)
 	return result.Value.Str()
 }
 
-func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector string, expectedLength int) (string, error) {
+func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector string, beforeCount int, expectedLength int, prompt string) (string, error) {
 	js := fmt.Sprintf(`
 		async () => {
 			function isCodeBlockButton(btn) {
 				if (btn.closest('pre')) return true;
+				if (btn.closest('table')) return true;
+				if (btn.closest('figure')) return true;
 				if (btn.closest('[class*="code-header"]')) return true;
 				if (btn.closest('[class*="code-action"]')) return true;
 				if (btn.closest('[class*="code-toolbar"]')) return true;
 				if (btn.closest('[class*="code-lang"]')) return true;
+				if (btn.closest('[class*="image-viewer"]')) return true;
+				if (btn.closest('[class*="image-preview"]')) return true;
+				if (btn.closest('[class*="img-zoom"]')) return true;
+				if (btn.closest('[class*="zoom-container"]')) return true;
+				if (btn.closest('[class*="preview-wrap"]')) return true;
+				if (btn.closest('[class*="table-wrap"]')) return true;
+				if (btn.closest('[class*="table-scroll"]')) return true;
+				if (btn.closest('[class*="chart"]')) return true;
+				if (btn.closest('[class*="mermaid"]')) return true;
 				var cls = (btn.getAttribute('class') || '').toLowerCase();
 				if (cls.indexOf('md-copy') >= 0 || cls.indexOf('code-copy') >= 0 ||
 					cls.indexOf('block-copy') >= 0 || cls.indexOf('snippet') >= 0) return true;
+				if (cls.indexOf('image') >= 0 || cls.indexOf('picture') >= 0 ||
+					cls.indexOf('zoom') >= 0 || cls.indexOf('preview') >= 0 ||
+					cls.indexOf('lightbox') >= 0 || cls.indexOf('modal') >= 0 ||
+					cls.indexOf('enlarge') >= 0 || cls.indexOf('fullscreen') >= 0 ||
+					cls.indexOf('expand') >= 0 || cls.indexOf('scale') >= 0) return true;
+				var aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+				var title = (btn.getAttribute('title') || '').toLowerCase();
+				if (aria.indexOf('zoom') >= 0 || aria.indexOf('preview') >= 0 ||
+					aria.indexOf('enlarge') >= 0 || aria.indexOf('expand') >= 0 ||
+					aria.indexOf('fullscreen') >= 0 || title.indexOf('zoom') >= 0 ||
+					title.indexOf('preview') >= 0 || title.indexOf('enlarge') >= 0) return true;
 				var p = btn.parentElement;
 				if (p) {
 					for (var i = 0; i < p.children.length; i++) {
@@ -120,13 +142,29 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 
 			function isInThinking(el) {
 				var parent = el.parentElement;
-				for (var i = 0; i < 3 && parent; i++) {
+				for (var i = 0; i < 6 && parent; i++) {
 					var pcls = (parent.getAttribute('class') || '').toLowerCase();
-					if (pcls.indexOf('think-block') >= 0 || pcls.indexOf('think-content') >= 0 ||
-						pcls.indexOf('think_process') >= 0 || pcls.indexOf('thinking-block') >= 0 ||
-						pcls.indexOf('thinking-content') >= 0 || pcls.indexOf('reasoning-block') >= 0 ||
-						pcls.indexOf('reasoning-content') >= 0 || pcls.indexOf('thought-block') >= 0) {
-						return true;
+					if (pcls.indexOf('think') >= 0 || pcls.indexOf('thinking') >= 0 ||
+						pcls.indexOf('reasoning') >= 0 || pcls.indexOf('thought') >= 0 ||
+						pcls.indexOf('chain-of-thought') >= 0 || pcls.indexOf('cot-block') >= 0 ||
+						pcls.indexOf('inner-mono') >= 0 || pcls.indexOf('analysis') >= 0 ||
+						pcls.indexOf('deep-think') >= 0 || pcls.indexOf('pre-think') >= 0 ||
+						pcls.indexOf('mind') >= 0 || pcls.indexOf('deduce') >= 0 ||
+						pcls.indexOf('reflect') >= 0 || pcls.indexOf('contemplate') >= 0) {
+						if (pcls.indexOf('thinker') < 0 && pcls.indexOf('do-not-think') < 0) {
+							return true;
+						}
+					}
+					var ptag = parent.tagName;
+					if (ptag === 'DETAILS') {
+						var psum = parent.querySelector('summary');
+						if (psum) {
+							var pst = (psum.textContent || '').toLowerCase();
+							if (pst.indexOf('思考') >= 0 || pst.indexOf('think') >= 0 ||
+								pst.indexOf('reason') >= 0 || pst.indexOf('分析') >= 0) {
+								return true;
+							}
+						}
 					}
 					parent = parent.parentElement;
 				}
@@ -175,42 +213,70 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 				if (!isInThinking(allAnswerEls[fi])) answerEls.push(allAnswerEls[fi]);
 			}
 			if (answerEls.length === 0) answerEls = Array.prototype.slice.call(allAnswerEls);
+
+			// Target the LAST answer element (the newest). For multi-turn, this is the
+			// current turn's answer. Do NOT scan the whole conversation tree, which would
+			// pick up copy buttons of previous turns and copy stale content.
 			var answerEl = answerEls[answerEls.length - 1];
 
-			var searchRoot = answerEl;
-			for (var i = 0; i < 6 && searchRoot && searchRoot.parentElement; i++) {
-				searchRoot = searchRoot.parentElement;
+			// Search copy buttons INSIDE the answer element first, then its immediate
+			// message container (up to 2 ancestors). Going further up merges siblings and
+			// causes the extractor to click older messages' copy buttons.
+			var searchRoots = [answerEl];
+			var ancestor = answerEl.parentElement;
+			for (var ai = 0; ai < 2 && ancestor; ai++) {
+				searchRoots.push(ancestor);
+				ancestor = ancestor.parentElement;
 			}
 
-			var allBtns = searchRoot.querySelectorAll('button, [role="button"], [class*="copy"], [class*="action"], [class*="toolbar"], [class*="operate"]');
-			var outsideCandidates = [];
 			var insideCandidates = [];
-
-			for (var i = 0; i < allBtns.length; i++) {
-				var btn = allBtns[i];
-				if (isCodeBlockButton(btn)) continue;
-
-				var score = scoreButton(btn);
-				if (score === 0) continue;
-
-				var cls = (btn.getAttribute('class') || '').toLowerCase();
-				var insideAnswer = false;
-				for (var j = 0; j < answerEls.length; j++) {
-					if (answerEls[j].contains(btn)) { insideAnswer = true; break; }
-				}
-
-				if (insideAnswer) {
+			var outsideCandidates = [];
+			var seen = {};
+			for (var ri = 0; ri < searchRoots.length; ri++) {
+				var root = searchRoots[ri];
+				var btns = root.querySelectorAll('button, [role="button"], [class*="copy"], [class*="action"], [class*="toolbar"], [class*="operate"]');
+				for (var i = 0; i < btns.length; i++) {
+					var btn = btns[i];
+					if (seen[btn]) continue;
+					// skip buttons that belong to a DIFFERENT answer element (older turn)
+					if (ri === 0 || answerEl.contains(btn)) {
+						seen[btn] = true;
+					} else {
+						// for ancestor searches, only accept buttons contained in answerEl
+						// (already covered above) - skip sibling-message buttons
+						continue;
+					}
+					if (isCodeBlockButton(btn)) continue;
+					var score = scoreButton(btn);
+					if (score === 0) continue;
+					var cls = (btn.getAttribute('class') || '').toLowerCase();
 					insideCandidates.push({el: btn, score: score, cls: cls.substring(0, 60)});
-				} else {
-					outsideCandidates.push({el: btn, score: score, cls: cls.substring(0, 60)});
 				}
 			}
 
-			var candidates = outsideCandidates.concat(insideCandidates);
+			// Only if nothing inside the answer element, look in the single parent that
+			// wraps the answer + its action bar (common pattern: action bar is a sibling
+			// of the answer content inside one message container).
+			if (insideCandidates.length === 0 && answerEl.parentElement) {
+				var msgRoot = answerEl.parentElement;
+				var msgBtns = msgRoot.querySelectorAll('button, [role="button"], [class*="copy"], [class*="action"], [class*="toolbar"], [class*="operate"]');
+				for (var i = 0; i < msgBtns.length; i++) {
+					var btn = msgBtns[i];
+					if (seen[btn]) continue;
+					// skip buttons clearly belonging to a sibling message (older turn)
+					if (!msgRoot.contains(answerEl)) continue;
+					if (isCodeBlockButton(btn)) continue;
+					var score = scoreButton(btn);
+					if (score === 0) continue;
+					outsideCandidates.push({el: btn, score: score, cls: (btn.getAttribute('class') || '').toLowerCase().substring(0, 60)});
+				}
+			}
+
+			var candidates = insideCandidates.concat(outsideCandidates);
 			candidates.sort(function(a, b) { return b.score - a.score; });
 
 			if (candidates.length === 0) {
-				var actionContainers = searchRoot.querySelectorAll('[class*="action"], [class*="toolbar"], [class*="operate"], [class*="footer"]');
+				var actionContainers = answerEl.querySelectorAll('[class*="action"], [class*="toolbar"], [class*="operate"], [class*="footer"]');
 				for (var i = 0; i < actionContainers.length; i++) {
 					if (actionContainers[i].closest('pre')) continue;
 					if (isCodeBlockButton(actionContainers[i])) continue;
@@ -226,30 +292,63 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 
 			if (candidates.length === 0) return {status: 'no candidates', text: ''};
 
+			// Capture the answer element's own text so we can validate the clipboard
+			// result actually came from THIS message, not a previous turn.
+			var answerOwnText = (answerEl.innerText || answerEl.textContent || '').trim().substring(0, 200);
 			var bestText = '';
-			var bestInfo = 'none';
-			var earlyExitThreshold = Math.max(500, Math.floor(%d * 0.5));
-			for (var i = 0; i < candidates.length; i++) {
-			window.__capturedMarkdown = '';
-			candidates[i].el.scrollIntoView({block: 'center'});
-			try { candidates[i].el.click(); } catch(e) { candidates[i].el.dispatchEvent(new MouseEvent('click', {bubbles: true})); }
-
-				await new Promise(function(r) { setTimeout(r, 800); });
-
-				if (window.__capturedMarkdown.length > bestText.length) {
-					bestText = window.__capturedMarkdown;
-					bestInfo = 'success:' + i + ':' + candidates[i].score + ':' + candidates[i].cls;
+		var bestInfo = 'none';
+		var earlyExitThreshold = Math.max(500, Math.floor(%d * 0.5));
+		var promptSnippet = %q;
+		function closeOverlaysInline() {
+			var closeEls = document.querySelectorAll('[class*="close"], [aria-label*="close"], [class*="close-btn"], [class*="closeBtn"]');
+			for (var ci = 0; ci < closeEls.length; ci++) {
+				var r = closeEls[ci].getBoundingClientRect();
+				if (r.width < 5 || r.height < 5) continue;
+				var st = window.getComputedStyle(closeEls[ci]);
+				if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue;
+				try { closeEls[ci].click(); } catch(ce) { closeEls[ci].dispatchEvent(new MouseEvent('click', {bubbles: true})); }
+			}
+			var overlays = document.querySelectorAll('[class*="modal"], [class*="lightbox"], [class*="enlarge"], [class*="fullscreen"], [class*="zoom-overlay"], [class*="image-viewer"], [class*="preview-wrap"], [role="dialog"]');
+			for (var oi = 0; oi < overlays.length; oi++) {
+				var st = window.getComputedStyle(overlays[oi]);
+				if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue;
+				var z = parseInt(st.zIndex) || 0;
+				if (z > 100) {
+					var cb = overlays[oi].querySelector('[class*="close"], button, [aria-label*="close"]');
+					if (cb) { try { cb.click(); } catch(ce2) {} }
 				}
-				if (bestText.length > earlyExitThreshold) break;
 			}
-
-			if (bestText.length > 100) {
-				return {status: bestInfo, text: bestText};
+			for (var ei = 0; ei < 2; ei++) {
+				document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true}));
+				document.dispatchEvent(new KeyboardEvent('keyup', {key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true}));
 			}
-
-			return {status: 'all failed: ' + candidates.length + ' tried, best=' + bestText.length, text: bestText};
 		}
-	`, answerSelector, expectedLength)
+		for (var i = 0; i < candidates.length; i++) {
+		closeOverlaysInline();
+		window.__capturedMarkdown = '';
+		candidates[i].el.scrollIntoView({block: 'center'});
+		try { candidates[i].el.click(); } catch(e) { candidates[i].el.dispatchEvent(new MouseEvent('click', {bubbles: true})); }
+
+			await new Promise(function(r) { setTimeout(r, 800); });
+
+			var captured = window.__capturedMarkdown || '';
+			if (promptSnippet && captured.indexOf(promptSnippet) >= 0 && captured.length < promptSnippet.length + 200) {
+				continue;
+			}
+			if (captured.length > bestText.length) {
+				bestText = captured;
+				bestInfo = 'success:' + i + ':' + candidates[i].score + ':' + candidates[i].cls;
+			}
+			if (bestText.length > earlyExitThreshold) break;
+		}
+
+		if (bestText.length > 100) {
+			return {status: bestInfo, text: bestText, answerOwnText: answerOwnText};
+		}
+
+		return {status: 'all failed: ' + candidates.length + ' tried, best=' + bestText.length, text: bestText, answerOwnText: answerOwnText};
+	}
+	`, answerSelector, expectedLength, prompt)
 
 	result, err := page.Timeout(30 * time.Second).Eval(js)
 	if err != nil {
@@ -269,7 +368,7 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 
 type HtmlToMarkdownExtractor struct{}
 
-func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int) (string, error) {
+func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int, prompt string) (string, error) {
 	js := fmt.Sprintf(`
 		() => {
 			function htmlToMd(el) {
@@ -378,13 +477,14 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 							}
 						}
 						if (!codeLang && codeText.length > 0) {
-							if (/^\s*(def |import |from |print\(|class |if __name__)/.test(codeText)) codeLang = 'python';
-							else if (/^\s*(function |const |let |var |import |export )/.test(codeText)) codeLang = 'javascript';
-							else if (/^\s*(func |package )/.test(codeText)) codeLang = 'go';
-							else if (/^\s*(pub fn |fn |use |mod )/.test(codeText)) codeLang = 'rust';
-							else if (/^\s*(#include|#define|#ifndef)/.test(codeText)) codeLang = 'cpp';
-							else if (/^\s*<\?php/.test(codeText)) codeLang = 'php';
-						}
+						if (/^\s*(def |import |from |print\(|class |if __name__)/.test(codeText)) codeLang = 'python';
+						else if (/^\s*(function |const |let |var |import |export )/.test(codeText)) codeLang = 'javascript';
+						else if (/^\s*(func |package )/.test(codeText)) codeLang = 'go';
+						else if (/^\s*(pub fn |fn |use |mod )/.test(codeText)) codeLang = 'rust';
+						else if (/^\s*(#include|#define|#ifndef)/.test(codeText)) codeLang = 'cpp';
+						else if (/^\s*<\?php/.test(codeText)) codeLang = 'php';
+						else if (/\b(graph TD|graph LR|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|journey|pie)\b/.test(codeText)) codeLang = 'mermaid';
+					}
 						result += '\n\x60\x60\x60' + codeLang + '\n' + codeText + '\n\x60\x60\x60\n\n';
 						break;
 						case 'blockquote': result += '\n> ' + convert(child, depth+1).trim() + '\n\n'; break;
@@ -462,12 +562,15 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 
 			function isInThinking(el) {
 				var parent = el.parentElement;
-				for (var i = 0; i < 3 && parent; i++) {
+				for (var i = 0; i < 5 && parent; i++) {
 					var cls = (parent.getAttribute('class') || '').toLowerCase();
 					if (cls.indexOf('think-block') >= 0 || cls.indexOf('think-content') >= 0 ||
 						cls.indexOf('think_process') >= 0 || cls.indexOf('thinking-block') >= 0 ||
-						cls.indexOf('thinking-content') >= 0 || cls.indexOf('reasoning-block') >= 0 ||
-						cls.indexOf('reasoning-content') >= 0 || cls.indexOf('thought-block') >= 0) {
+						cls.indexOf('thinking-content') >= 0 || cls.indexOf('thinking-process') >= 0 ||
+						cls.indexOf('reasoning-block') >= 0 || cls.indexOf('reasoning-content') >= 0 ||
+						cls.indexOf('reasoning-text') >= 0 || cls.indexOf('thought-block') >= 0 ||
+						cls.indexOf('thought-content') >= 0 || cls.indexOf('thought-process') >= 0 ||
+						cls.indexOf('chain-of-thought') >= 0 || cls.indexOf('cot-block') >= 0) {
 						return true;
 					}
 					parent = parent.parentElement;
@@ -475,38 +578,63 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 				return false;
 			}
 
-			var parts = [];
-			for (var i = %d; i < els.length; i++) {
-				if (isInThinking(els[i])) continue;
-				var md = htmlToMd(els[i]).trim();
-				var raw = (els[i].innerText || els[i].textContent || '').trim();
-				raw = raw.replace(/^\s*(Table|\u8868\u683c|Python|JavaScript|Java|Go|Golang|Rust|TypeScript|C\+\+|C#|SQL|HTML|CSS|Bash|Shell|JSON|YAML|XML|Markdown|Code|\u4ee3\u7801|Copy|Download|\u590d\u5236|\u4e0b\u8f7d|Share|\u5206\u4eab|Regenerate|\u91cd\u65b0\u751f\u6210|Kotlin|Swift|Ruby|PHP|Perl|Scala|Dart|Lua|Matlab|\u8fd0\u884c|\u8fd0\u884c\u8f93\u51fa\u793a\u4f8b|plaintext)\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+			function filterOutNested(els) {
+			var result = [];
+			for (var i = 0; i < els.length; i++) {
+				var isChild = false;
+				for (var j = 0; j < els.length; j++) {
+					if (i !== j && els[j].contains(els[i])) {
+						isChild = true;
+						break;
+					}
+				}
+				if (!isChild) result.push(els[i]);
+			}
+			return result;
+		}
+
+		var promptSnippet = %q;
+		var startIdx = %d;
+		var candidateEls = [];
+		for (var i = startIdx; i < els.length; i++) {
+			if (isInThinking(els[i])) continue;
+			candidateEls.push(els[i]);
+		}
+		candidateEls = filterOutNested(candidateEls);
+
+		var parts = [];
+		for (var i = 0; i < candidateEls.length; i++) {
+			var md = htmlToMd(candidateEls[i]).trim();
+			var raw = (candidateEls[i].innerText || candidateEls[i].textContent || '').trim();
+			if (promptSnippet && raw.indexOf(promptSnippet) >= 0 && raw.length < promptSnippet.length + 200) continue;
+			raw = raw.replace(/^\s*(Table|\u8868\u683c|Python|JavaScript|Java|Go|Golang|Rust|TypeScript|C\+\+|C#|SQL|HTML|CSS|Bash|Shell|JSON|YAML|XML|Markdown|Code|\u4ee3\u7801|Copy|Download|\u590d\u5236|\u4e0b\u8f7d|Share|\u5206\u4eab|Regenerate|\u91cd\u65b0\u751f\u6210|Kotlin|Swift|Ruby|PHP|Perl|Scala|Dart|Lua|Matlab|\u8fd0\u884c|\u8fd0\u884c\u8f93\u51fa\u793a\u4f8b|plaintext|Mermaid|Preview|Fullscreen)\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+			if (md.length < raw.length * 0.7 && raw.length > md.length + 50) {
+				md = raw;
+			}
+			if (md) parts.push(md);
+		}
+		var maxText = parts.join('\n\n');
+		if (maxText === '' && els.length > 0) {
+			var fallbackEls = filterOutNested(els);
+			for (var fi = fallbackEls.length - 1; fi >= 0; fi--) {
+				if (isInThinking(fallbackEls[fi])) continue;
+				var md = htmlToMd(fallbackEls[fi]).trim();
+				var raw = (fallbackEls[fi].innerText || fallbackEls[fi].textContent || '').trim();
+				if (promptSnippet && raw.indexOf(promptSnippet) >= 0 && raw.length < promptSnippet.length + 200) continue;
+				raw = raw.replace(/^\s*(Table|\u8868\u683c|Python|JavaScript|Java|Go|Golang|Rust|TypeScript|C\+\+|C#|SQL|HTML|CSS|Bash|Shell|JSON|YAML|XML|Markdown|Code|\u4ee3\u7801|Copy|Download|\u590d\u5236|\u4e0b\u8f7d|Share|\u5206\u4eab|Regenerate|\u91cd\u65b0\u751f\u6210|Kotlin|Swift|Ruby|PHP|Perl|Scala|Dart|Lua|Matlab|\u8fd0\u884c|\u8fd0\u884c\u8f93\u51fa\u793a\u4f8b|plaintext|Mermaid|Preview|Fullscreen)\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
 				if (md.length < raw.length * 0.7 && raw.length > md.length + 50) {
 					md = raw;
 				}
-				if (md) parts.push(md);
-			}
-			var maxText = parts.join('\\n\\n');
-			if (maxText === '' && els.length > 0) {
-				var bestLen = 0;
-				for (var i = 0; i < els.length; i++) {
-					if (isInThinking(els[i])) continue;
-					var md = htmlToMd(els[i]).trim();
-					var raw = (els[i].innerText || els[i].textContent || '').trim();
-					raw = raw.replace(/^\s*(Table|\u8868\u683c|Python|JavaScript|Java|Go|Golang|Rust|TypeScript|C\+\+|C#|SQL|HTML|CSS|Bash|Shell|JSON|YAML|XML|Markdown|Code|\u4ee3\u7801|Copy|Download|\u590d\u5236|\u4e0b\u8f7d|Share|\u5206\u4eab|Regenerate|\u91cd\u65b0\u751f\u6210|Kotlin|Swift|Ruby|PHP|Perl|Scala|Dart|Lua|Matlab|\u8fd0\u884c|\u8fd0\u884c\u8f93\u51fa\u793a\u4f8b|plaintext)\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
-					if (md.length < raw.length * 0.7 && raw.length > md.length + 50) {
-						md = raw;
-					}
-					if (md.length > bestLen) {
-						bestLen = md.length;
-						maxText = md;
-					}
+				if (md) {
+					maxText = md;
+					break;
 				}
 			}
-			if (maxText.length > 50000) maxText = maxText.substring(0, 50000);
-			return {count: els.length, text: maxText};
 		}
-	`, answerSelector, beforeCount)
+		if (maxText.length > 50000) maxText = maxText.substring(0, 50000);
+		return {count: els.length, text: maxText};
+	}
+`, answerSelector, prompt, beforeCount)
 
 	result, err := page.Timeout(10 * time.Second).Eval(js)
 	if err != nil {
@@ -527,8 +655,8 @@ type HybridExtractor struct {
 	Fallback ContentExtractor
 }
 
-func (e *HybridExtractor) Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int) (string, error) {
-	text, err := e.Primary.Extract(page, answerSelector, beforeCount, expectedLength)
+func (e *HybridExtractor) Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int, prompt string) (string, error) {
+	text, err := e.Primary.Extract(page, answerSelector, beforeCount, expectedLength, prompt)
 	if err == nil && len(text) > 50 {
 		return text, nil
 	}
@@ -537,7 +665,7 @@ func (e *HybridExtractor) Extract(page *rod.Page, answerSelector string, beforeC
 	} else {
 		log.Printf("[rod] primary extraction too short (%d chars), trying fallback", len(text))
 	}
-	return e.Fallback.Extract(page, answerSelector, beforeCount, expectedLength)
+	return e.Fallback.Extract(page, answerSelector, beforeCount, expectedLength, prompt)
 }
 
 func NewContentExtractor(strategy string, copyButtonSelector string) ContentExtractor {

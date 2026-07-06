@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1420,24 +1421,27 @@ func (re *RodEngine) getAnswerStatus(page *rod.Page, selector string, beforeCoun
 				var parent = el.parentElement;
 				for (var i = 0; i < 6 && parent; i++) {
 					var cls = (parent.getAttribute('class') || '').toLowerCase();
-					if (cls.indexOf('think') >= 0 || cls.indexOf('thinking') >= 0 ||
-						cls.indexOf('reasoning') >= 0 || cls.indexOf('thought') >= 0 ||
+					// Only match explicit thinking/reasoning container classes.
+					// Avoid broad words like 'mind'/'analysis'/'reflect'/'contemplate'
+					// that match legitimate answer containers (e.g. 'mind-map',
+					// 'analysis-result') and cause the answer to be filtered out.
+					if (cls.indexOf('think-block') >= 0 || cls.indexOf('think-content') >= 0 ||
+						cls.indexOf('think_process') >= 0 || cls.indexOf('thinking-block') >= 0 ||
+						cls.indexOf('thinking-content') >= 0 || cls.indexOf('thinking-process') >= 0 ||
+						cls.indexOf('reasoning-block') >= 0 || cls.indexOf('reasoning-content') >= 0 ||
+						cls.indexOf('reasoning-text') >= 0 || cls.indexOf('thought-block') >= 0 ||
+						cls.indexOf('thought-content') >= 0 || cls.indexOf('thought-process') >= 0 ||
 						cls.indexOf('chain-of-thought') >= 0 || cls.indexOf('cot-block') >= 0 ||
-						cls.indexOf('inner-mono') >= 0 || cls.indexOf('analysis') >= 0 ||
-						cls.indexOf('deep-think') >= 0 || cls.indexOf('pre-think') >= 0 ||
-						cls.indexOf('mind') >= 0 || cls.indexOf('deduce') >= 0 ||
-						cls.indexOf('reflect') >= 0 || cls.indexOf('contemplate') >= 0) {
-						if (cls.indexOf('thinker') < 0 && cls.indexOf('do-not-think') < 0) {
-							return true;
-						}
+						cls.indexOf('inner-mono') >= 0 || cls.indexOf('deep-think') >= 0 ||
+						cls.indexOf('pre-think') >= 0) {
+						return true;
 					}
 					var tag = parent.tagName;
 					if (tag === 'DETAILS') {
 						var sum = parent.querySelector('summary');
 						if (sum) {
 							var st = (sum.textContent || '').toLowerCase();
-							if (st.indexOf('思考') >= 0 || st.indexOf('think') >= 0 ||
-								st.indexOf('reason') >= 0 || st.indexOf('分析') >= 0) {
+							if (st.indexOf('思考') >= 0 || st.indexOf('think') >= 0) {
 								return true;
 							}
 						}
@@ -1592,11 +1596,14 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	if preDiagResult, preDiagErr := page.Timeout(5 * time.Second).Eval(preDiagJs); preDiagErr == nil {
 		diagStr := preDiagResult.Value.Str()
 		log.Printf("[rod] pre-typePrompt diag: %s", diagStr)
-		if strings.Contains(site.URL, "/chat") && strings.Contains(diagStr, `"url":"`) {
+		// Use navigatedAwayFromChat for ALL sites (not just /chat URLs) so that
+		// sites like Qwen (www.qianwen.com/) are also guarded against /record,
+		// /write, etc. navigation.
+		if strings.Contains(diagStr, `"url":"`) {
 			urlStart := strings.Index(diagStr, `"url":"`) + 7
 			urlEnd := strings.Index(diagStr[urlStart:], `"`) + urlStart
 			currentURL := diagStr[urlStart:urlEnd]
-			if !strings.Contains(currentURL, "/chat") {
+			if re.navigatedAwayFromChat(currentURL, site.URL) {
 				log.Printf("[rod] page navigated away from chat (now %s), navigating back to %s", currentURL, site.URL)
 				if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
 					_ = page.WaitLoad()
@@ -1903,12 +1910,22 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	}
 
 	var lastText string
+	var finalText string
 	stableRounds := 0
 	const requiredStable = 8
-	const minPollsBeforeStable = 20
+	// Adaptive minimum polls before declaring stability. Long answers (tables,
+	// code blocks) need more time to finish streaming; short answers can be
+	// declared stable sooner. This reduces wait time for fast sites like
+	// DeepSeek while keeping safety for slow streaming sites like Kimi.
+	minPollsBeforeStable := 20
 	deadline := time.Now().Add(120 * time.Second)
 	pollCount := 0
 	renderRetryCount := 0
+	// Track the maximum element count seen during polling. Some sites (e.g.
+	// DeepSeek) remove the streaming element after completion and re-render
+	// a different structure, causing count to drop to 0 even though a full
+	// answer was captured in lastText. We use maxCount to detect this case.
+	maxCount := 0
 
 	for time.Now().Before(deadline) {
 		select {
@@ -1924,29 +1941,43 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 
 		currentCount, currentText := re.getAnswerStatus(page, sels.Answer, beforeCount, prompt)
 
-		if currentCount < beforeCount {
-			log.Printf("[rod] answer count decreased (%d -> %d), resetting baseline", beforeCount, currentCount)
-			re.closeOverlays(page)
-			if strings.Contains(site.URL, "/chat") {
-				if urlCheckRes, urlCheckErr := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlCheckErr == nil {
-					curURL := urlCheckRes.Value.Str()
-					if !strings.Contains(curURL, "/chat") {
-						log.Printf("[rod] page navigated away from chat during polling (now %s), navigating back to %s", curURL, site.URL)
-						if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
-							_ = page.WaitLoad()
-							_ = page.WaitIdle(3 * time.Second)
-							re.refreshPageAfterNavigation(page)
-							re.closeOverlays(page)
-							time.Sleep(1 * time.Second)
-						}
-					}
+	if currentCount > maxCount {
+		maxCount = currentCount
+	}
+
+	// If we already collected substantial answer text and the element count
+	// dropped to 0 (e.g. DeepSeek removes the streaming element after
+	// completion and re-renders a different structure), treat the answer as
+	// stabilized using the last captured text instead of polling for another
+	// 120s (which crashes Chrome on long-running sessions).
+	if currentCount == 0 && maxCount > 0 && len(lastText) > 100 && pollCount >= 6 {
+		log.Printf("[rod] answer count dropped to 0 after capturing %d chars (maxCount=%d), treating as stabilized (lastText)", len(lastText), maxCount)
+		if !isStillGenerating(page) && !isThinkingText(lastText) {
+			goto done
+		}
+	}
+
+	if currentCount < beforeCount {
+		log.Printf("[rod] answer count decreased (%d -> %d), resetting baseline", beforeCount, currentCount)
+		re.closeOverlays(page)
+		if urlCheckRes, urlCheckErr := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlCheckErr == nil {
+			curURL := urlCheckRes.Value.Str()
+			if re.navigatedAwayFromChat(curURL, site.URL) {
+				log.Printf("[rod] page navigated away from chat during polling (now %s), navigating back to %s", curURL, site.URL)
+				if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
+					_ = page.WaitLoad()
+					_ = page.WaitIdle(3 * time.Second)
+					re.refreshPageAfterNavigation(page)
+					re.closeOverlays(page)
+					time.Sleep(1 * time.Second)
 				}
 			}
-			beforeCount = currentCount
-			beforeText = currentText
-			lastText = ""
-			stableRounds = 0
 		}
+		beforeCount = currentCount
+		beforeText = currentText
+		lastText = ""
+		stableRounds = 0
+	}
 
 		if currentCount > beforeCount && currentText == "" && pollCount >= 5 && renderRetryCount < 3 {
 			renderRetryCount++
@@ -1965,34 +1996,80 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		}
 
 		if currentCount > beforeCount && currentText != "" {
-			if currentText == lastText {
-				stableRounds++
-				if stableRounds >= requiredStable && pollCount >= minPollsBeforeStable {
-					log.Printf("[rod] answer stabilized after %d polls (%d chars)", pollCount, len(currentText))
+		// Adaptive minimum polls: short answers (<2000 chars) can stabilize
+		// after 6 polls (3s), medium answers (<10000) after 12 polls (6s),
+		// long answers keep the default 20 polls (10s). This significantly
+		// reduces wait time for fast sites like DeepSeek with short answers.
+		adaptiveMin := minPollsBeforeStable
+		if len(currentText) < 2000 {
+			adaptiveMin = 6
+		} else if len(currentText) < 10000 {
+			adaptiveMin = 12
+		}
+		if currentText == lastText {
+			stableRounds++
+			if stableRounds >= requiredStable && pollCount >= adaptiveMin {
+				if isStillGenerating(page) || isThinkingText(currentText) {
+					stableRounds = 0
+					log.Printf("[rod] text stable but still generating or thinking, continuing poll (poll=%d len=%d)", pollCount, len(currentText))
+				} else {
+					log.Printf("[rod] answer stabilized after %d polls (%d chars, adaptiveMin=%d)", pollCount, len(currentText), adaptiveMin)
 					lastText = currentText
 					goto done
 				}
-			} else {
-				stableRounds = 0
-				lastText = currentText
-				if pollCount <= 5 || pollCount%20 == 0 {
-					log.Printf("[rod] polling... count=%d text_len=%d", currentCount, len(currentText))
-				}
 			}
-		} else if currentCount == beforeCount && beforeCount > 0 && currentText != "" && currentText != beforeText {
-		if currentText == lastText {
-			stableRounds++
-			if stableRounds >= requiredStable && pollCount >= minPollsBeforeStable {
-				log.Printf("[rod] answer stabilized (same count) after %d polls (%d chars)", pollCount, len(currentText))
-				goto done
+			// Early extraction: when the text is briefly stable (2 rounds = 1s)
+			// and the element still exists, try clipboard extraction. Some sites
+			// (e.g. DeepSeek) remove the streaming element right after completion,
+			// so waiting for the full requiredStable would miss the window. If
+			// clipboard succeeds with substantial markdown text, use it directly.
+			if stableRounds >= 2 && pollCount >= 4 && len(currentText) > 200 {
+				log.Printf("[rod] early clipboard extraction attempt (stableRounds=%d poll=%d len=%d)", stableRounds, pollCount, len(currentText))
+				earlyExtractor := NewContentExtractor(sels.ContentStrategy, sels.CopyButton)
+				if earlyText, earlyErr := earlyExtractor.Extract(page, sels.Answer, beforeCount, len(currentText), prompt); earlyErr == nil && len(earlyText) > len(currentText)/2 {
+					log.Printf("[rod] early extraction succeeded: %d chars (vs polling %d), using it", len(earlyText), len(currentText))
+					finalText = earlyText
+					lastText = currentText
+					goto done
+				} else if earlyErr != nil {
+					log.Printf("[rod] early extraction failed: %v", earlyErr)
+				} else {
+					log.Printf("[rod] early extraction too short: %d chars (vs polling %d), continuing", len(earlyText), len(currentText))
+				}
 			}
 		} else {
 			stableRounds = 0
 			lastText = currentText
 			if pollCount <= 5 || pollCount%20 == 0 {
-				log.Printf("[rod] polling (same count)... text_len=%d", len(currentText))
+				log.Printf("[rod] polling... count=%d text_len=%d", currentCount, len(currentText))
 			}
 		}
+		} else if currentCount == beforeCount && beforeCount > 0 && currentText != "" && currentText != beforeText {
+		// Same adaptive minimum for same-count branch (element text updated in place)
+		adaptiveMinSame := minPollsBeforeStable
+		if len(currentText) < 2000 {
+			adaptiveMinSame = 6
+		} else if len(currentText) < 10000 {
+			adaptiveMinSame = 12
+		}
+		if currentText == lastText {
+		stableRounds++
+		if stableRounds >= requiredStable && pollCount >= adaptiveMinSame {
+			if isStillGenerating(page) || isThinkingText(currentText) {
+				stableRounds = 0
+				log.Printf("[rod] text stable (same count) but still generating or thinking, continuing poll (poll=%d len=%d)", pollCount, len(currentText))
+			} else {
+				log.Printf("[rod] answer stabilized (same count) after %d polls (%d chars, adaptiveMin=%d)", pollCount, len(currentText), adaptiveMinSame)
+				goto done
+			}
+		}
+	} else {
+		stableRounds = 0
+		lastText = currentText
+		if pollCount <= 5 || pollCount%20 == 0 {
+			log.Printf("[rod] polling (same count)... text_len=%d", len(currentText))
+		}
+	}
 	}
 
 		if pollCount == 10 && currentCount == 0 {
@@ -2110,18 +2187,16 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 
 		if pollCount == 30 && (currentCount < beforeCount || (currentCount == 0 && beforeCount == 0)) {
 			re.closeOverlays(page)
-			if strings.Contains(site.URL, "/chat") {
-				if urlCheckRes2, urlCheckErr2 := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlCheckErr2 == nil {
-					curURL2 := urlCheckRes2.Value.Str()
-					if !strings.Contains(curURL2, "/chat") {
-						log.Printf("[rod] page navigated away during polling (now %s), navigating back to %s", curURL2, site.URL)
-						if navErr2 := page.Timeout(10 * time.Second).Navigate(site.URL); navErr2 == nil {
-							_ = page.WaitLoad()
-							_ = page.WaitIdle(3 * time.Second)
-							re.refreshPageAfterNavigation(page)
-							re.closeOverlays(page)
-							time.Sleep(1 * time.Second)
-						}
+			if urlCheckRes2, urlCheckErr2 := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlCheckErr2 == nil {
+				curURL2 := urlCheckRes2.Value.Str()
+				if re.navigatedAwayFromChat(curURL2, site.URL) {
+					log.Printf("[rod] page navigated away during polling (now %s), navigating back to %s", curURL2, site.URL)
+					if navErr2 := page.Timeout(10 * time.Second).Navigate(site.URL); navErr2 == nil {
+						_ = page.WaitLoad()
+						_ = page.WaitIdle(3 * time.Second)
+						re.refreshPageAfterNavigation(page)
+						re.closeOverlays(page)
+						time.Sleep(1 * time.Second)
 					}
 				}
 			}
@@ -2339,17 +2414,25 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 done:
 	log.Printf("[rod] answer stabilized, extracting content (strategy=%s)", sels.ContentStrategy)
 
-	// Close any zoom/preview/modal overlays that may have opened during polling
-	// (e.g. Doubao enlarges a table/image when it gets clicked). If an overlay is
-	// covering the answer, the clipboard copy button search would click into the
-	// wrong element and capture the zoomed fragment instead of the full reply.
-	re.closeOverlays(page)
+	// If early extraction already set finalText (e.g. clipboard succeeded during
+	// polling while the element still existed), skip the normal extraction path.
+	if finalText == "" {
+		// Close any zoom/preview/modal overlays that may have opened during polling
+		// (e.g. Doubao enlarges a table/image when it gets clicked). If an overlay is
+		// covering the answer, the clipboard copy button search would click into the
+		// wrong element and capture the zoomed fragment instead of the full reply.
+		re.closeOverlays(page)
 
-	extractor := NewContentExtractor(sels.ContentStrategy, sels.CopyButton)
-	finalText, extractErr := extractor.Extract(page, sels.Answer, beforeCount, len(lastText), prompt)
-	if extractErr != nil {
-		log.Printf("[rod] content extraction failed: %v, falling back to polling text", extractErr)
-		finalText = lastText
+		extractor := NewContentExtractor(sels.ContentStrategy, sels.CopyButton)
+		extractText, extractErr := extractor.Extract(page, sels.Answer, beforeCount, len(lastText), prompt)
+		if extractErr != nil {
+			log.Printf("[rod] content extraction failed: %v, falling back to polling text", extractErr)
+			finalText = lastText
+		} else {
+			finalText = extractText
+		}
+	} else {
+		log.Printf("[rod] using early extraction result (%d chars), skipping normal extraction", len(finalText))
 	}
 
 	// Validate the extracted text actually corresponds to the answer the polling
@@ -2542,6 +2625,16 @@ done:
 
 	log.Printf("[rod] answer received: %d chars, text=%q", len(finalText), finalText[:min(100, len(finalText))])
 
+	// Strip thinking/reasoning process text that some sites (e.g. GLM, DeepThink)
+	// include inside the answer container. These appear as sections delimited by
+	// markers like "思考结束" / "思考开始" or embedded in elements with thinking
+	// classes that the html2md filter missed (e.g. when content_strategy=html2md
+	// captures the whole .answer-content including the thinking panel).
+	finalText = stripThinkingProcess(finalText)
+	if len(finalText) == 0 {
+		finalText = lastText
+	}
+
 	re.closeOverlays(page)
 
 	if re.db != nil {
@@ -2606,6 +2699,198 @@ func shareCommonSubstring(a, b string, minLen int) bool {
 	return false
 }
 
+// navigatedAwayFromChat reports whether currentURL has navigated away from
+// the site's chat page. It compares hostnames and detects known non-chat path
+// segments (write/record/agent/canvas/etc.) that indicate the click landed on
+// a non-chat page.
+func (re *RodEngine) navigatedAwayFromChat(currentURL, siteURL string) bool {
+	if currentURL == "" {
+		return false
+	}
+	siteHost := ""
+	if u, err := neturl.Parse(siteURL); err == nil {
+		siteHost = u.Hostname()
+	}
+	curHost := ""
+	curPath := ""
+	if u, err := neturl.Parse(currentURL); err == nil {
+		curHost = u.Hostname()
+		curPath = u.Path
+	}
+	// Different hostname = definitely navigated away
+	if siteHost != "" && curHost != "" && siteHost != curHost {
+		return true
+	}
+	// Known non-chat path segments
+	nonChatSegments := []string{
+		"/write", "/writing", "/article", "/doc", "/record", "/recording",
+		"/agent", "/canvas", "/draw", "/paint", "/image", "/video", "/audio",
+		"/trans", "/translate", "/summar", "/present", "/slide", "/sheet",
+		"/setting", "/profile", "/account", "/billing", "/help", "/about",
+		"/moyin", "/chat-file", "/file", "/workspace",
+	}
+	for _, seg := range nonChatSegments {
+		if strings.Contains(curPath, seg) {
+			return true
+		}
+	}
+	// If site URL has /chat but current doesn't, navigated away
+	if strings.Contains(siteURL, "/chat") && !strings.Contains(currentURL, "/chat") {
+		return true
+	}
+	return false
+}
+
+// isStillGenerating reports whether the page currently shows a visible
+// "stop generating" / "thinking" / "loading" indicator. When such an indicator
+// is visible the answer text may be temporarily stable (e.g. between
+// paragraphs) even though generation has not finished. We keep polling in that
+// case to avoid truncating the answer.
+func isStillGenerating(page *rod.Page) bool {
+	if page == nil {
+		return false
+	}
+	checkJs := `() => {
+		// Only detect explicit "stop generating" buttons. Avoid broad selectors
+		// like [class*="loading"] / [class*="typing"] / [class*="thinking"] which
+		// match sidebar loaders, input cursors, and other always-present
+		// elements, causing false positives that prevent answers from ever being
+		// marked stable (trapped in endless polling).
+		var candidates = document.querySelectorAll(
+			'button[class*="stop"], [role="button"][class*="stop"], ' +
+			'button[aria-label*="停止"], button[aria-label*="Stop"], ' +
+			'button[aria-label*="stop"], [class*="stop-generating"], [class*="stop-generation"]'
+		);
+		for (var i = 0; i < candidates.length; i++) {
+			var el = candidates[i];
+			var rect = el.getBoundingClientRect();
+			if (rect.width === 0 && rect.height === 0) continue;
+			var style = window.getComputedStyle(el);
+			if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+			var text = (el.innerText || el.textContent || '').toLowerCase().trim();
+			var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase().trim();
+			var cls = (el.getAttribute('class') || '').toLowerCase();
+			var allText = text + ' ' + ariaLabel;
+			if (allText.indexOf('停止生成') >= 0 || allText.indexOf('stop generating') >= 0 ||
+				allText.indexOf('停止') >= 0 || allText.indexOf('stop') >= 0 ||
+				cls.indexOf('stop-generating') >= 0 || cls.indexOf('stop-generation') >= 0 ||
+				cls.indexOf('stop-icon') >= 0 || cls.indexOf('stop-btn') >= 0) {
+				return true;
+			}
+		}
+		return false;
+	}`
+	result, err := page.Timeout(2 * time.Second).Eval(checkJs)
+	if err != nil {
+		return false
+	}
+	return result.Value.Bool()
+}
+
+// isThinkingText reports whether the given text looks like a "thinking..." /
+// "generating..." placeholder rather than the actual answer. GLM and some other
+// models show short transitional phrases while still reasoning; treating those
+// as a stable answer would truncate the real response.
+func isThinkingText(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	// Only short transitional text counts. Real answers are typically > 100 chars.
+	if len([]rune(t)) > 100 {
+		return false
+	}
+	lower := strings.ToLower(t)
+	patterns := []string{
+		"正在思考", "思考中", "让我想想", "让我思考",
+		"thinking", "let me think", "let me consider",
+		"reasoning", "正在推理", "推理中",
+		"generating", "正在生成", "生成中",
+		"typing", "正在输入",
+		"loading", "加载中",
+		"please wait", "请稍等", "请稍候",
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripThinkingProcess removes embedded thinking/reasoning sections from the
+// final answer text. Some sites (notably GLM/chatglm.cn) render the thinking
+// process inside the same .answer-content container as the final answer,
+// prefixed by markers like "思考结束" or wrapped in "思考开始...思考结束".
+// This function strips those sections so only the real answer remains.
+func stripThinkingProcess(text string) string {
+	if text == "" {
+		return text
+	}
+	// Common thinking-section markers used by Chinese LLM sites.
+	// We strip everything from the start of a thinking marker to (and
+	// including) the corresponding end marker. If only an end marker is
+	// present, we strip everything before and including it.
+	endMarkers := []string{"思考结束", "推理结束", "思考完成", "推理完成", "Think End", "Think end", "End of Thought", "End of thought"}
+	startMarkers := []string{"思考开始", "推理开始", "思考过程", "推理过程", "Think Start", "Think start", "Start of Thought", "Begin Thought"}
+
+	// First try: strip from start marker to end marker (inclusive).
+	for _, start := range startMarkers {
+		for _, end := range endMarkers {
+			sIdx := strings.Index(text, start)
+			if sIdx < 0 {
+				continue
+			}
+			eIdx := strings.Index(text[sIdx:], end)
+			if eIdx < 0 {
+				continue
+			}
+			eIdx += sIdx + len(end)
+			// Keep text before the start marker and after the end marker.
+			before := text[:sIdx]
+			after := text[eIdx:]
+			text = strings.TrimSpace(before + after)
+		}
+	}
+
+	// Second pass: if only an end marker exists, strip everything up to and
+	// including it (the thinking section has no explicit start marker but the
+	// answer begins right after the end marker).
+	for _, end := range endMarkers {
+		idx := strings.Index(text, end)
+		if idx < 0 {
+			continue
+		}
+		after := text[idx+len(end):]
+		after = strings.TrimLeft(after, "\r\n\t :、。，-")
+		if len(after) > 0 {
+			text = after
+			break
+		}
+	}
+
+	// Final cleanup: remove any stray thinking-related single-line markers
+	// that survived the section stripping (e.g. "思考结束" on its own line
+	// when there was no start marker to pair with).
+	lines := strings.Split(text, "\n")
+	var kept []string
+	skipPatterns := []string{"思考结束", "思考开始", "推理结束", "推理开始", "思考过程", "推理过程"}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		skip := false
+		for _, p := range skipPatterns {
+			if trimmed == p || trimmed == strings.ToLower(p) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			kept = append(kept, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
 func (re *RodEngine) StartNewChat(site models.Site) error {
 	if err := re.ensureBrowser(); err != nil {
 		return fmt.Errorf("browser health check: %w", err)
@@ -2626,6 +2911,25 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 	var sels Selectors
 	if site.Selectors != "" {
 		json.Unmarshal([]byte(site.Selectors), &sels)
+	}
+
+	// FIRST: if the page has navigated away from the chat page (e.g. to an
+	// AI-writing or record page), navigate back to the site URL before checking
+	// for the input element. The /record page has a [contenteditable=true]
+	// element for note-taking that would falsely match sels.Input and cause
+	// StartNewChat to return early without navigating back.
+	if urlResult, urlErr := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlErr == nil {
+		currentURL := urlResult.Value.Str()
+		if re.navigatedAwayFromChat(currentURL, site.URL) {
+			log.Printf("[rod] StartNewChat: site %s is on non-chat page (%s), navigating to %s", site.ID, currentURL, site.URL)
+			if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
+				_ = page.WaitLoad()
+				_ = page.WaitIdle(3 * time.Second)
+				re.refreshPageAfterNavigation(page)
+				re.closeOverlays(page)
+				time.Sleep(1 * time.Second)
+			}
+		}
 	}
 
 	if sels.Input != "" {
@@ -2682,15 +2986,40 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 			beforeNewCount, _ = re.getAnswerStatus(page, sels.Answer, 0, "")
 		}
 
-		searchJs := `
+		// Non-chat path/keyword exclusions - prevent clicking AI-writing/record/agent
+		// links that would navigate away from the chat page.
+		excludeTextKeywords := []string{"AI写作", "AI写作助手", "写作", "文章", "文档", "绘画", "画图", "记录", "录制", "智能体", "agent", "翻译", "总结", "分析", "报告", "PPT", "表格"}
+		excludePathKeywords := []string{"write", "writing", "article", "doc", "record", "recording", "agent", "canvas", "draw", "paint", "image", "video", "audio", "trans", "translate", "summar", "present", "slide", "sheet", "setting", "profile", "account", "billing", "help", "about"}
+		excludeTextJs := ""
+		for i, kw := range excludeTextKeywords {
+			if i > 0 {
+				excludeTextJs += ","
+			}
+			excludeTextJs += "'" + kw + "'"
+		}
+		excludePathJs := ""
+		for i, kw := range excludePathKeywords {
+			if i > 0 {
+				excludePathJs += ","
+			}
+			excludePathJs += "'" + kw + "'"
+		}
+
+		// Search and click in one step: find the best "new chat" candidate and
+		// click it directly via JS (el.click()). This works for both on-screen
+		// and off-screen elements, eliminating blind re-search fallbacks that
+		// could find wrong buttons (e.g. "AI写作", "record").
+		searchAndClickJs := fmt.Sprintf(`
 			() => {
 				var keywords = ['新建对话', '新建会话', '新对话', '新会话', '新聊天', '新建聊天', '开启新对话', '发起新对话', '创建新对话', 'New Chat', 'New chat', 'new chat'];
-			var classKeywords = ['new-chat', 'newchat', 'new_chat', 'new-conversation', 'sidebar-new', 'new-dialog', 'new-talk', 'chat-new', 'start-new', 'create-new', 'add-chat', 'newsession', 'new-session'];
-			var candidates = document.querySelectorAll('button, a, div[role=button]');
-			var matches = [];
-			var allCandidates = [];
-			for (var i = 0; i < candidates.length; i++) {
-				var el = candidates[i];
+				var classKeywords = ['new-chat', 'newchat', 'new_chat', 'new-conversation', 'sidebar-new', 'new-dialog', 'new-talk', 'chat-new', 'new-session'];
+				var excludeTextKeywords = [%s];
+				var excludePathKeywords = [%s];
+				var candidates = document.querySelectorAll('button, a, div[role=button]');
+				var matches = [];
+				var allCandidates = [];
+				for (var i = 0; i < candidates.length; i++) {
+					var el = candidates[i];
 					var text = (el.innerText || el.textContent || '').trim();
 					var ariaLabel = (el.getAttribute('aria-label') || '').trim();
 					var title = (el.getAttribute('title') || '').trim();
@@ -2699,8 +3028,20 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 					var allText = (text + ' ' + ariaLabel + ' ' + title).toLowerCase();
 					if (allText.trim().length === 0) continue;
 					if (text.length > 30) continue;
+					var excluded = false;
+					for (var ei = 0; ei < excludeTextKeywords.length; ei++) {
+						if (text.indexOf(excludeTextKeywords[ei]) >= 0) { excluded = true; break; }
+					}
+					if (!excluded) {
+						for (var pi = 0; pi < excludePathKeywords.length; pi++) {
+							var pk = excludePathKeywords[pi];
+							if (href.indexOf(pk) >= 0 || cls.indexOf(pk) >= 0) { excluded = true; break; }
+						}
+					}
+					if (el.getAttribute('target') === '_blank') excluded = true;
+					if (excluded) continue;
 					if (allCandidates.length < 10) {
-						allCandidates.push({tag: el.tagName, cls: (el.getAttribute('class') || '').substring(0, 50), text: text.substring(0, 20), aria: ariaLabel.substring(0, 20), href: href.substring(0, 30)});
+						allCandidates.push({tag: el.tagName, cls: el.getAttribute('class') || '', text: text.substring(0, 20), aria: ariaLabel.substring(0, 20), href: href.substring(0, 30)});
 					}
 					var matched = false;
 					var priority = 0;
@@ -2720,131 +3061,82 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 							}
 						}
 					}
-					if (!matched && href && (href === '/' || href.endsWith('/chat') || href.indexOf('new') >= 0)) {
+					if (!matched && href && href !== '' && (href === '/' || href.endsWith('/chat') || href.indexOf('/new-chat') >= 0 || href.indexOf('/new_chat') >= 0 || href.indexOf('/newchat') >= 0)) {
 						matched = true;
 						priority = 5;
 					}
 					if (!matched) continue;
-					el.scrollIntoView({block: 'center'});
 					var rect = el.getBoundingClientRect();
 					if (rect.width === 0 || rect.height === 0) continue;
-					matches.push({
-						idx: i,
-						tag: el.tagName,
-						cls: (el.getAttribute('class') || '').substring(0, 80),
-						text: text.substring(0, 30),
-						aria: ariaLabel.substring(0, 30),
-						href: href.substring(0, 30),
-						priority: priority,
-						x: rect.x + rect.width / 2,
-						y: rect.y + rect.height / 2
-					});
+					matches.push({el: el, priority: priority, tag: el.tagName, cls: el.getAttribute('class') || '', text: text.substring(0, 30), aria: ariaLabel.substring(0, 30), href: href.substring(0, 30)});
 				}
 				matches.sort(function(a, b) { return b.priority - a.priority; });
-				return {matches: matches, candidates: allCandidates};
+				if (matches.length === 0) return {clicked: false, info: 'no matches', candidates: allCandidates};
+				var best = matches[0];
+				try {
+					best.el.scrollIntoView({block: 'center'});
+					best.el.click();
+					return {clicked: true, tag: best.tag, cls: best.cls.substring(0, 80), text: best.text, aria: best.aria, href: best.href, priority: best.priority, candidates: allCandidates};
+				} catch(e) {
+					return {clicked: false, info: 'click error: ' + e.message, candidates: allCandidates};
+				}
 			}
-		`
-		result, err := page.Timeout(5 * time.Second).Eval(searchJs)
+		`, excludeTextJs, excludePathJs)
+		result, err := page.Timeout(5 * time.Second).Eval(searchAndClickJs)
 		if err != nil {
-			log.Printf("[rod] new chat search failed for site %s: %v", site.ID, err)
+			log.Printf("[rod] new chat search-and-click failed for site %s: %v", site.ID, err)
+		} else if result.Value.Get("clicked").Bool() {
+			log.Printf("[rod] new chat clicked for site %s: tag=%s cls=%s text=%q priority=%d",
+				site.ID, result.Value.Get("tag").Str(), result.Value.Get("cls").Str(),
+				result.Value.Get("text").Str(), result.Value.Get("priority").Int())
+			clicked = true
 		} else {
-			arr := result.Value.Get("matches").Arr()
-			if len(arr) > 0 {
-				first := arr[0]
-				x := first.Get("x").Num()
-				y := first.Get("y").Num()
-				log.Printf("[rod] new chat found for site %s: tag=%s cls=%s text=%q priority=%d pos=(%.0f,%.0f)",
-					site.ID, first.Get("tag").Str(), first.Get("cls").Str(),
-					first.Get("text").Str(), first.Get("priority").Int(), x, y)
-
-				if x > 0 && y > 0 {
-					page.Mouse.MoveTo(proto.NewPoint(x, y))
-					page.Mouse.Click(proto.InputMouseButtonLeft, 1)
-					log.Printf("[rod] new chat CDP click at (%.0f, %.0f)", x, y)
-					time.Sleep(300 * time.Millisecond)
-					clicked = true
-				} else {
-					log.Printf("[rod] new chat element off-screen (%.0f, %.0f), using JS click fallback", x, y)
-					jsClickRes, jsClickErr := page.Eval(`() => {
-						var keywords = ['新建对话', '新建会话', '新对话', '新会话', '新聊天', '新建聊天', '开启新对话', '发起新对话', '创建新对话', 'New Chat', 'New chat', 'new chat'];
-						var classKeywords = ['new-chat', 'newchat', 'new_chat', 'new-conversation', 'sidebar-new', 'new-dialog', 'new-talk', 'chat-new', 'start-new', 'create-new', 'add-chat', 'newsession', 'new-session'];
-						var btns = document.querySelectorAll('button, a, div[role=button]');
-						for (var i = 0; i < btns.length; i++) {
-							var t = (btns[i].innerText || btns[i].textContent || '').trim().toLowerCase();
-							var a = (btns[i].getAttribute('aria-label') || '').trim().toLowerCase();
-							var c = (btns[i].getAttribute('class') || '').toLowerCase();
-							var all = t + ' ' + a;
-							for (var j = 0; j < keywords.length; j++) {
-								if (all.indexOf(keywords[j].toLowerCase()) >= 0) {
-									btns[i].click();
-									return 'clicked: ' + t.substring(0, 30);
-								}
-							}
-							for (var k = 0; k < classKeywords.length; k++) {
-								if (c.indexOf(classKeywords[k]) >= 0) {
-									btns[i].click();
-									return 'clicked: ' + c.substring(0, 30);
-								}
-							}
-						}
-						return 'not found';
-					}`)
-					if jsClickErr == nil && jsClickRes.Value.Str() != "not found" {
-						log.Printf("[rod] new chat JS click: %s", jsClickRes.Value.Str())
-						clicked = true
-					}
+			log.Printf("[rod] new chat button not found for site %s: %s", site.ID, result.Value.Get("info").Str())
+			candidates := result.Value.Get("candidates").Arr()
+			for i, c := range candidates {
+				if i >= 5 {
+					break
 				}
-			} else {
-				log.Printf("[rod] new chat button not found for site %s, candidates seen:", site.ID)
-				candidates := result.Value.Get("candidates").Arr()
-				for i, c := range candidates {
-					if i >= 5 { break }
-					log.Printf("[rod]   candidate[%d]: tag=%s cls=%s text=%q aria=%q href=%q",
-						i, c.Get("tag").Str(), c.Get("cls").Str(),
-						c.Get("text").Str(), c.Get("aria").Str(), c.Get("href").Str())
-				}
+				log.Printf("[rod]   candidate[%d]: tag=%s cls=%s text=%q aria=%q href=%q",
+					i, c.Get("tag").Str(), c.Get("cls").Str(),
+					c.Get("text").Str(), c.Get("aria").Str(), c.Get("href").Str())
 			}
 		}
 
 		if clicked {
 			time.Sleep(3 * time.Second)
-			if sels.Answer != "" {
-			afterNewCount, _ := re.getAnswerStatus(page, sels.Answer, 0, "")
-			if afterNewCount < beforeNewCount {
+			verified := false
+			if sels.Answer != "" && beforeNewCount > 0 {
+				afterNewCount, _ := re.getAnswerStatus(page, sels.Answer, 0, "")
+				if afterNewCount < beforeNewCount {
 					log.Printf("[rod] new chat verified for site %s: answer count %d -> %d", site.ID, beforeNewCount, afterNewCount)
-				} else if beforeNewCount > 0 {
-					log.Printf("[rod] new chat may not have worked for site %s: answer count %d -> %d, trying JS click", site.ID, beforeNewCount, afterNewCount)
-					page.Eval(`() => {
-						var keywords = ['新建对话', '新建会话', '新对话', '新会话', '新聊天', '新建聊天', '开启新对话', '发起新对话', '创建新对话', 'New Chat', 'New chat', 'new chat'];
-						var btns = document.querySelectorAll('button, a, div[role=button]');
-						for (var i = 0; i < btns.length; i++) {
-							var t = (btns[i].innerText || btns[i].textContent || '').trim().toLowerCase();
-							var a = (btns[i].getAttribute('aria-label') || '').trim().toLowerCase();
-							for (var j = 0; j < keywords.length; j++) {
-								if (t.indexOf(keywords[j].toLowerCase()) >= 0 || a.indexOf(keywords[j].toLowerCase()) >= 0) {
-									btns[i].click();
-									return 'clicked: ' + t.substring(0, 30);
-								}
-							}
-						}
-						return 'not found';
-				}`)
-				time.Sleep(2 * time.Second)
-				afterNewCount2, _ := re.getAnswerStatus(page, sels.Answer, 0, "")
-				if afterNewCount2 >= beforeNewCount && beforeNewCount > 0 {
-						log.Printf("[rod] new chat JS click also failed for site %s: answer count %d -> %d, falling back to navigation", site.ID, beforeNewCount, afterNewCount2)
-						clicked = false
-					}
+					verified = true
 				}
+			} else {
+				verified = true
 			}
-			if clicked {
-			_ = page.WaitIdle(5 * time.Second)
-			re.reinjectMocks(page)
 
+			if !verified {
+				// Verification failed: navigate to site URL directly instead of
+				// doing another blind button search that could click wrong buttons.
+				log.Printf("[rod] new chat verification failed for site %s, navigating to %s", site.ID, site.URL)
+				if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
+					_ = page.WaitLoad()
+					_ = page.WaitIdle(3 * time.Second)
+					re.refreshPageAfterNavigation(page)
+					re.closeOverlays(page)
+					time.Sleep(1 * time.Second)
+				}
+			} else {
+				_ = page.WaitIdle(5 * time.Second)
+				re.reinjectMocks(page)
+			}
+
+			// Post-click URL guard: detect navigation away from the site's chat page.
 			urlCheckJs := `() => window.location.href`
 			if urlResult, urlErr := page.Timeout(3 * time.Second).Eval(urlCheckJs); urlErr == nil {
 				currentURL := urlResult.Value.Str()
-				if strings.Contains(site.URL, "/chat") && !strings.Contains(currentURL, "/chat") {
+				if re.navigatedAwayFromChat(currentURL, site.URL) {
 					log.Printf("[rod] new chat: page navigated away from chat URL (now %s), navigating back to %s", currentURL, site.URL)
 					if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
 						_ = page.WaitLoad()
@@ -2856,7 +3148,6 @@ func (re *RodEngine) StartNewChat(site models.Site) error {
 			return nil
 		}
 	}
-}
 
 	log.Printf("[rod] new chat: navigating to %s for site %s", site.URL, site.ID)
 	if err := page.Navigate(site.URL); err != nil {

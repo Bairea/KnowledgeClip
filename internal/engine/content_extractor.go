@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -144,24 +145,26 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 				var parent = el.parentElement;
 				for (var i = 0; i < 6 && parent; i++) {
 					var pcls = (parent.getAttribute('class') || '').toLowerCase();
-					if (pcls.indexOf('think') >= 0 || pcls.indexOf('thinking') >= 0 ||
-						pcls.indexOf('reasoning') >= 0 || pcls.indexOf('thought') >= 0 ||
+					// Only match explicit thinking/reasoning container classes.
+					// Avoid broad words like 'mind'/'analysis'/'reflect' that match
+					// legitimate answer containers and cause the answer to be filtered.
+					if (pcls.indexOf('think-block') >= 0 || pcls.indexOf('think-content') >= 0 ||
+						pcls.indexOf('think_process') >= 0 || pcls.indexOf('thinking-block') >= 0 ||
+						pcls.indexOf('thinking-content') >= 0 || pcls.indexOf('thinking-process') >= 0 ||
+						pcls.indexOf('reasoning-block') >= 0 || pcls.indexOf('reasoning-content') >= 0 ||
+						pcls.indexOf('reasoning-text') >= 0 || pcls.indexOf('thought-block') >= 0 ||
+						pcls.indexOf('thought-content') >= 0 || pcls.indexOf('thought-process') >= 0 ||
 						pcls.indexOf('chain-of-thought') >= 0 || pcls.indexOf('cot-block') >= 0 ||
-						pcls.indexOf('inner-mono') >= 0 || pcls.indexOf('analysis') >= 0 ||
-						pcls.indexOf('deep-think') >= 0 || pcls.indexOf('pre-think') >= 0 ||
-						pcls.indexOf('mind') >= 0 || pcls.indexOf('deduce') >= 0 ||
-						pcls.indexOf('reflect') >= 0 || pcls.indexOf('contemplate') >= 0) {
-						if (pcls.indexOf('thinker') < 0 && pcls.indexOf('do-not-think') < 0) {
-							return true;
-						}
+						pcls.indexOf('inner-mono') >= 0 || pcls.indexOf('deep-think') >= 0 ||
+						pcls.indexOf('pre-think') >= 0) {
+						return true;
 					}
 					var ptag = parent.tagName;
 					if (ptag === 'DETAILS') {
 						var psum = parent.querySelector('summary');
 						if (psum) {
 							var pst = (psum.textContent || '').toLowerCase();
-							if (pst.indexOf('思考') >= 0 || pst.indexOf('think') >= 0 ||
-								pst.indexOf('reason') >= 0 || pst.indexOf('分析') >= 0) {
+							if (pst.indexOf('思考') >= 0 || pst.indexOf('think') >= 0) {
 								return true;
 							}
 						}
@@ -495,10 +498,13 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 							else result += linkText;
 							break;
 						case 'img':
-							var src = child.getAttribute('src') || '';
-							var alt = child.getAttribute('alt') || '';
-							if (src) result += '![' + alt + '](' + src + ')';
-							break;
+						var src = child.getAttribute('src') || '';
+						var alt = child.getAttribute('alt') || '';
+						// Skip base64 data URLs (logos, icons, avatars) - they bloat
+						// output with thousands of chars of useless data
+						if (src.indexOf('data:') === 0) break;
+						if (src) result += '![' + alt + '](' + src + ')';
+						break;
 						case 'ul': case 'ol':
 							var items = child.children;
 							for (var k = 0; k < items.length; k++) {
@@ -614,25 +620,47 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 			if (md) parts.push(md);
 		}
 		var maxText = parts.join('\n\n');
-		if (maxText === '' && els.length > 0) {
-			var fallbackEls = filterOutNested(els);
-			for (var fi = fallbackEls.length - 1; fi >= 0; fi--) {
-				if (isInThinking(fallbackEls[fi])) continue;
-				var md = htmlToMd(fallbackEls[fi]).trim();
-				var raw = (fallbackEls[fi].innerText || fallbackEls[fi].textContent || '').trim();
-				if (promptSnippet && raw.indexOf(promptSnippet) >= 0 && raw.length < promptSnippet.length + 200) continue;
-				raw = raw.replace(/^\s*(Table|\u8868\u683c|Python|JavaScript|Java|Go|Golang|Rust|TypeScript|C\+\+|C#|SQL|HTML|CSS|Bash|Shell|JSON|YAML|XML|Markdown|Code|\u4ee3\u7801|Copy|Download|\u590d\u5236|\u4e0b\u8f7d|Share|\u5206\u4eab|Regenerate|\u91cd\u65b0\u751f\u6210|Kotlin|Swift|Ruby|PHP|Perl|Scala|Dart|Lua|Matlab|\u8fd0\u884c|\u8fd0\u884c\u8f93\u51fa\u793a\u4f8b|plaintext|Mermaid|Preview|Fullscreen)\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
-				if (md.length < raw.length * 0.7 && raw.length > md.length + 50) {
-					md = raw;
-				}
-				if (md) {
-					maxText = md;
-					break;
-				}
+	var diag = {
+		totalEls: els.length,
+		startIdx: startIdx,
+		candidateEls: candidateEls.length,
+		partsCount: parts.length,
+		partDetails: parts.map(function(p, i) { return {idx: i, len: p.length}; }),
+		fallbackUsed: false,
+		skippedFallback: false
+	};
+	// When startIdx >= totalEls, ALL matched elements existed before the answer was
+	// sent (beforeCount too high). This happens when the selector is too broad
+	// (matches sidebar/nav) OR the answer rendered inside an existing element
+	// (Kimi-style multi-turn). In both cases, blindly taking the last element
+	// risks extracting stale/sidebar content (e.g. a logo). Return empty and let
+	// the caller fall back to polling text, which is the actual answer.
+	if (maxText === '' && els.length > 0 && startIdx < els.length) {
+		diag.fallbackUsed = true;
+		var fallbackEls = filterOutNested(els);
+		diag.fallbackEls = fallbackEls.length;
+		for (var fi = fallbackEls.length - 1; fi >= 0; fi--) {
+			if (isInThinking(fallbackEls[fi])) continue;
+			var md = htmlToMd(fallbackEls[fi]).trim();
+			var raw = (fallbackEls[fi].innerText || fallbackEls[fi].textContent || '').trim();
+			if (promptSnippet && raw.indexOf(promptSnippet) >= 0 && raw.length < promptSnippet.length + 200) continue;
+			raw = raw.replace(/^\s*(Table|\u8868\u683c|Python|JavaScript|Java|Go|Golang|Rust|TypeScript|C\+\+|C#|SQL|HTML|CSS|Bash|Shell|JSON|YAML|XML|Markdown|Code|\u4ee3\u7801|Copy|Download|\u590d\u5236|\u4e0b\u8f7d|Share|\u5206\u4eab|Regenerate|\u91cd\u65b0\u751f\u6210|Kotlin|Swift|Ruby|PHP|Perl|Scala|Dart|Lua|Matlab|\u8fd0\u884c|\u8fd0\u884c\u8f93\u51fa\u793a\u4f8b|plaintext|Mermaid|Preview|Fullscreen)\s*$/gim, '').replace(/\n{3,}/g, '\n\n').trim();
+			if (md.length < raw.length * 0.7 && raw.length > md.length + 50) {
+				md = raw;
+			}
+			if (md) {
+				maxText = md;
+				diag.fallbackFound = true;
+				diag.fallbackMdLen = md.length;
+				diag.fallbackRawLen = raw.length;
+				break;
 			}
 		}
+	} else if (maxText === '' && startIdx >= els.length && els.length > 0) {
+		diag.skippedFallback = true;
+	}
 		if (maxText.length > 50000) maxText = maxText.substring(0, 50000);
-		return {count: els.length, text: maxText};
+		return {count: els.length, text: maxText, diag: diag};
 	}
 `, answerSelector, prompt, beforeCount)
 
@@ -642,11 +670,28 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 	}
 
 	text := result.Value.Get("text").Str()
+	diag := result.Value.Get("diag")
+	totalEls := diag.Get("totalEls").Int()
+	startIdx := diag.Get("startIdx").Int()
+	candidateEls := diag.Get("candidateEls").Int()
+	partsCount := diag.Get("partsCount").Int()
+	fallbackUsed := diag.Get("fallbackUsed").Bool()
 	if text == "" {
-		return "", fmt.Errorf("html2md returned empty text")
+		partDetails := diag.Get("partDetails").Arr()
+		partSummary := make([]string, len(partDetails))
+		for i, p := range partDetails {
+			partSummary[i] = fmt.Sprintf("[%d]=%d", p.Get("idx").Int(), p.Get("len").Int())
+		}
+		skippedFallback := diag.Get("skippedFallback").Bool()
+		log.Printf("[rod] html2md returned EMPTY: totalEls=%d startIdx=%d candidateEls=%d partsCount=%d fallbackUsed=%v skippedFallback=%v fallbackEls=%d parts=[%s]",
+			totalEls, startIdx, candidateEls, partsCount, fallbackUsed, skippedFallback, diag.Get("fallbackEls").Int(), strings.Join(partSummary, ", "))
+		if skippedFallback {
+			log.Printf("[rod] html2md: startIdx(%d) >= totalEls(%d), selector matches only pre-existing elements - returning empty to avoid stale content", startIdx, totalEls)
+		}
+		return "", fmt.Errorf("html2md returned empty text (totalEls=%d startIdx=%d candidateEls=%d skippedFallback=%v)", totalEls, startIdx, candidateEls, skippedFallback)
 	}
 
-	log.Printf("[rod] html2md extraction succeeded: %d chars", len(text))
+	log.Printf("[rod] html2md extraction succeeded: %d chars (totalEls=%d startIdx=%d candidateEls=%d parts=%d fallback=%v)", len(text), totalEls, startIdx, candidateEls, partsCount, fallbackUsed)
 	return text, nil
 }
 

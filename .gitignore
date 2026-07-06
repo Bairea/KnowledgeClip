@@ -6,6 +6,8 @@ web/dist
 
 # Browser data
 .browser-data/
+.browser-data-probe/
+web/.pw-browsers/
 
 # Database
 data/chat.db
@@ -19,3 +21,13 @@ bin/
 # OS
 Thumbs.db
 Desktop.ini
+
+# Debug artifacts
+*.log
+session_*.json
+session_*.report.json
+test_*.json
+tmp_*.json
+qwen_*.txt
+*.png
+inspect_render.*

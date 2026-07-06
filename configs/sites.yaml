@@ -40,7 +40,7 @@ sites:
       engine:
         primary: cdp
         selectors:
-            answer: .ds-assistant-message-main-content
+            answer: .ds-markdown
             content_strategy: clipboard
             copy_button: ""
             input: textarea
@@ -85,11 +85,11 @@ sites:
       engine:
         primary: cdp
         selectors:
-            answer: '[class*=markdown]'
-            content_strategy: clipboard
+            answer: '.answer-content'
+            content_strategy: html2md
             copy_button: ""
             input: textarea
-            submit: ""
+            submit: 'div.enter-icon-container'
             wait_for: textarea
       format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
       cookie_file: ""

@@ -58,7 +58,7 @@ export default function App() {
   const [historyWidth, setHistoryWidth] = useState(256)
   const [sidebarWidth, setSidebarWidth] = useState(224)
   const [inputHeight, setInputHeight] = useState(80)
-  const [columnsPerRow, setColumnsPerRow] = useState(2)
+  const [columnsPerRow, setColumnsPerRow] = useState(3)
 
   const currentTurnRef = useRef(0)
 

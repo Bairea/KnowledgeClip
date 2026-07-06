@@ -5,7 +5,7 @@ interface ExportPanelProps {
 }
 
 export default function ExportPanel({ sessionId }: ExportPanelProps) {
-  const [filterKept, setFilterKept] = useState(false)
+  const [filterKept, setFilterKept] = useState(true)
 
   if (!sessionId) {
     return null

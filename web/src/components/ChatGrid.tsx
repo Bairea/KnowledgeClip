@@ -8,7 +8,7 @@ interface ChatGridProps {
   columns?: number
 }
 
-export default function ChatGrid({ messages, sites, onToggleKeep, columns = 2 }: ChatGridProps) {
+export default function ChatGrid({ messages, sites, onToggleKeep, columns = 3 }: ChatGridProps) {
   const siteMap = new Map(sites.map((s) => [s.id, s.name]))
 
   const gridStyle = {

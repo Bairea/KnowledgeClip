@@ -498,6 +498,25 @@ WebSocket 消息协议与 `internal/api/websocket.go` 的 `MessageUpdate` 严格
 - `test_multi_turn.py`（新增）：通过 API 发送多轮对话，轮询等待所有站点完成，自动导出并运行 LLM 验证
 - 验证结果：修复前 DeepSeek Turn 2 返回 Turn 1 的旧回答；修复后 DeepSeek 和 GLM 正确返回 "3+1=4" 的计算结果
 
+### 2026-07-07 修复 Qwen 导航重定向与 DeepSeek 流式生成中断
+
+根因：(1) Qwen 首页加载后通过 `window.location.href = '/record'` 直接赋值跳转，绕过了 `history.pushState`/`replaceState` 和 `location.assign`/`replace` 的拦截，导致页面导航到非聊天页面（/record、/write 等），触发新建标签和功能异常；(2) DeepSeek 答案在流式生成中途（~500-1000 chars 时）页面完全重置到欢迎页状态（`bodyTextPreview: "Start chatting with Instant..."`），答案元素消失，内容丢失。此前误判为虚拟列表回收，实际根因是 `closeOverlays` 函数在轮询期间每 5 秒定期执行，其内部包含 3 次 `Escape` 键分发和广谱的 `[class*="close"]`/`[class*="back"]`/`[class*="cancel"]` 选择器点击，在 DeepSeek 上会取消生成并重置 SPA 视图。
+
+- `internal/engine/rod_engine.go`：
+  - **`Location.prototype.href` setter override**：拦截 `window.location.href = '...'` 直接赋值（Qwen 首页的重定向方式），通过 `Object.getOwnPropertyDescriptor(Location.prototype, 'href')` 获取原生 setter，包装后检查 `isBlockedURL(url)` 再调用原生 setter
+  - **扩展 `blockedPaths`**：从 Qwen 专属路径扩展为 `['/record', '/recording', '/write', '/writing', '/agent', '/canvas', '/draw', '/paint', '/workspace']`，覆盖所有非聊天功能页面
+  - **`window.open` 和 click handler 加 `isBlockedURL` 检查**：阻止通过新标签或链接点击导航到非聊天页面
+  - **移除轮询期间的定期 `closeOverlays` 调用**：删除 `pollCount%10 == 0` 分支中的两处 `re.closeOverlays(page)` 调用（循环开头和 `continuePolling:` 标签后），`closeOverlays` 仅在答案稳定后（`done:` 标签处）的内容提取前调用
+  - **移除 `closeOverlays` 中的 `Escape` 键分发**：3 次 `keydown`/`keyup` Escape 事件在 DeepSeek 等聊天站点会取消正在进行的生成
+  - **收窄 `closeOverlays` 的选择器**：从 `closeSelectors` 中移除 `[class*="close"]`/`[aria-label*="close"]`/`[class*="cancel"]`/`[class*="back"]`/`[class*="dismiss"]` 等广谱选择器，仅保留明确的面板关闭选择器（`dialog-close`/`modal-close`/`lightbox-close`/`preview-close`/`zoom-close` 等），避免误点聊天界面的功能按钮
+- `configs/sites.yaml`：
+  - DeepSeek `submit` 选择器从 `div[class*=send]`（返回 0 元素）改为 `div.ds-button--primary`
+  - DeepSeek `answer` 选择器从 `.ds-markdown`（匹配 5 个元素含思考过程）改为 `.ds-assistant-message-main-content`（仅匹配最终答案）
+- 验证结果：
+  - DeepSeek Turn 1：返回 5463 字符（PowerShell 字符计数）/ 8499 字节（Go 字节计数），包含表格、标题、列表、引用块、分隔线
+  - DeepSeek Turn 2（复用 session）：返回 236 字符，包含代码块（`3 + 1 = 4`）、标题、表格，`startIdx=1` 正确提取第二个答案元素
+  - Qwen：URL 跳转至 `/chat/<session-id>` 而非 `/record`，无额外标签，Slate.js 输入和提交正常
+
 ## 开发与验证约定
 
 每次修改代码后，必须按以下顺序执行编译与运行：

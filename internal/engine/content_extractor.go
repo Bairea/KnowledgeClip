@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -370,6 +371,37 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 }
 
 type HtmlToMarkdownExtractor struct{}
+
+// ExtractFromHTML converts a saved HTML string (the outerHTML of an answer
+// element captured during streaming) to Markdown. It injects the HTML into a
+// hidden temp div and runs the same htmlToMd conversion used by Extract.
+// This is used when the live answer element has been recycled by a virtual
+// list (e.g. DeepSeek's ds-virtual-list-visible-items) and is no longer in
+// the DOM at extraction time.
+func (e *HtmlToMarkdownExtractor) ExtractFromHTML(page *rod.Page, html string, prompt string) (string, error) {
+	if strings.TrimSpace(html) == "" {
+		return "", fmt.Errorf("empty snapshot html")
+	}
+	encodedHTML, err := json.Marshal(html)
+	if err != nil {
+		return "", fmt.Errorf("encode snapshot html: %w", err)
+	}
+	injectJs := fmt.Sprintf(`() => {
+		var existing = document.getElementById('__snapshot_answer');
+		if (existing) existing.remove();
+		var wrapper = document.createElement('div');
+		wrapper.id = '__snapshot_answer';
+		wrapper.style.cssText = 'position:absolute;left:-9999px;top:0;width:800px;visibility:hidden;';
+		wrapper.innerHTML = %s;
+		document.body.appendChild(wrapper);
+		return 'ok';
+	}`, string(encodedHTML))
+	if _, err := page.Timeout(5 * time.Second).Eval(injectJs); err != nil {
+		return "", fmt.Errorf("inject snapshot html: %w", err)
+	}
+	defer page.Timeout(2 * time.Second).Eval(`() => { var el = document.getElementById('__snapshot_answer'); if (el) el.remove(); }`)
+	return e.Extract(page, "#__snapshot_answer > *", 0, len(html), prompt)
+}
 
 func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string, beforeCount int, expectedLength int, prompt string) (string, error) {
 	js := fmt.Sprintf(`

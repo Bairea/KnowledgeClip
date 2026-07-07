@@ -24,13 +24,13 @@ import (
 )
 
 type RodEngine struct {
-	browser        *rod.Browser
-	db             *storage.DB
-	pages          map[string]*rod.Page
-	mu             sync.Mutex
-	browserMu      sync.Mutex
-	controlURL     string
-	userDataDir    string
+	browser         *rod.Browser
+	db              *storage.DB
+	pages           map[string]*rod.Page
+	mu              sync.Mutex
+	browserMu       sync.Mutex
+	controlURL      string
+	userDataDir     string
 	tabGuardStarted bool
 }
 
@@ -480,8 +480,19 @@ func (re *RodEngine) getOrCreatePage(site models.Site) (*rod.Page, error) {
 			};
 		};
 
+		var blockedPaths = ['/record', '/recording', '/write', '/writing', '/agent', '/canvas', '/draw', '/paint', '/workspace'];
+		var isBlockedURL = function(url) {
+			if (!url) return false;
+			try {
+				for (var b = 0; b < blockedPaths.length; b++) {
+					if (url.indexOf(blockedPaths[b]) >= 0) return true;
+				}
+			} catch(e) {}
+			return false;
+		};
+
 		window.open = function(url) {
-			if (url) {
+			if (url && !isBlockedURL(url)) {
 				window.location.href = url;
 			}
 			return null;
@@ -495,7 +506,7 @@ func (re *RodEngine) getOrCreatePage(site models.Site) (*rod.Page, error) {
 			if (el && el.tagName === 'A') {
 				if (el.target === '_blank' || el.getAttribute('target') === '_blank') {
 					e.preventDefault();
-					if (el.href) {
+					if (el.href && !isBlockedURL(el.href)) {
 						window.location.href = el.href;
 					}
 				}
@@ -518,16 +529,6 @@ func (re *RodEngine) getOrCreatePage(site models.Site) (*rod.Page, error) {
 			observer.observe(document.documentElement, {childList: true, subtree: true});
 		} catch(e) {}
 
-		var blockedPaths = ['/record', '/recording'];
-		var isBlockedURL = function(url) {
-			if (!url) return false;
-			try {
-				for (var b = 0; b < blockedPaths.length; b++) {
-					if (url.indexOf(blockedPaths[b]) >= 0) return true;
-				}
-			} catch(e) {}
-			return false;
-		};
 		var origPush = history.pushState ? history.pushState.bind(history) : null;
 		var origReplace = history.replaceState ? history.replaceState.bind(history) : null;
 		if (origPush) {
@@ -556,6 +557,28 @@ func (re *RodEngine) getOrCreatePage(site models.Site) (*rod.Page, error) {
 					if (isBlockedURL(url)) return;
 					origRep(url);
 				};
+			}
+		} catch(e) {}
+		// Intercept direct location.href assignment (e.g. Qwen homepage does
+		// window.location.href = '/record' which bypasses all the overrides above).
+		// Also covers window.location = '...' and document.location = '...' since
+		// they all go through Location.prototype.href setter.
+		try {
+			var hrefDesc = Object.getOwnPropertyDescriptor(Location.prototype, 'href');
+			if (hrefDesc && typeof hrefDesc.set === 'function') {
+				var origHrefSet = hrefDesc.set;
+				Object.defineProperty(Location.prototype, 'href', {
+					configurable: true,
+					enumerable: true,
+					get: hrefDesc.get,
+					set: function(url) {
+						if (isBlockedURL(url)) {
+							console.log('[tab-guard] blocked location.href set to: ' + url);
+							return;
+						}
+						origHrefSet.call(this, url);
+					}
+				});
 			}
 		} catch(e) {}
 	`
@@ -1182,7 +1205,9 @@ func (re *RodEngine) submitPrompt(page *rod.Page, submitSelector string, inputSe
 			selName, tagName, clsName)
 		candidates := result3.Value.Get("candidates").Arr()
 		for i, c := range candidates {
-			if i >= 5 { break }
+			if i >= 5 {
+				break
+			}
 			log.Printf("[rod]   submit candidate[%d]: cls=%s x=%d svg=%v",
 				i, c.Get("cls").Str(), c.Get("x").Int(), c.Get("svg").Bool())
 		}
@@ -1287,18 +1312,16 @@ func (re *RodEngine) closeOverlays(page *rod.Page) {
 	page.Eval(`() => {
 		function closeOverlays() {
 			var closeSelectors = [
-				'[class*="close"]', '[aria-label*="close"]', '[aria-label*="Close"]', '[class*="Close"]',
-				'[class*="cancel"]', '[class*="back"]', '[class*="dismiss"]',
-				'[class*="dialog-close"]', '[class*="modal-close"]', '[class*="lightbox-close"]',
-				'[class*="preview-close"]', '[class*="zoom-close"]', '[class*="image-close"]',
-				'[class*="enlarge-close"]', '[class*="fullscreen-close"]', '[class*="scale-close"]',
-				'svg[class*="close"]', 'button[class*="icon"][class*="close"]',
-				'[class*="close-btn"]', '[class*="closeBtn"]', '[class*="close_btn"]',
-				'[class*="mw-close"]', '[class*="mw-cancel"]', '[class*="mw-dismiss"]',
-				'[class*="meeting-close"]', '[class*="recorder-close"]',
-				'button[class*="mw"] [class*="close"]', '[class*="confirm-modal"] [class*="close"]',
-				'[class*="confirm-modal"] [class*="cancel"]', '[class*="confirm-modal"] button'
-			];
+			'[class*="dialog-close"]', '[class*="modal-close"]', '[class*="lightbox-close"]',
+			'[class*="preview-close"]', '[class*="zoom-close"]', '[class*="image-close"]',
+			'[class*="enlarge-close"]', '[class*="fullscreen-close"]', '[class*="scale-close"]',
+			'svg[class*="close"]', 'button[class*="icon"][class*="close"]',
+			'[class*="close-btn"]', '[class*="closeBtn"]', '[class*="close_btn"]',
+			'[class*="mw-close"]', '[class*="mw-cancel"]', '[class*="mw-dismiss"]',
+			'[class*="meeting-close"]', '[class*="recorder-close"]',
+			'button[class*="mw"] [class*="close"]', '[class*="confirm-modal"] [class*="close"]',
+			'[class*="confirm-modal"] [class*="cancel"]', '[class*="confirm-modal"] button'
+		];
 			for (var s = 0; s < closeSelectors.length; s++) {
 				var els = document.querySelectorAll(closeSelectors[s]);
 				for (var i = 0; i < els.length; i++) {
@@ -1335,20 +1358,18 @@ func (re *RodEngine) closeOverlays(page *rod.Page) {
 
 			var backdrops = document.querySelectorAll('[class*="backdrop"], [class*="mask"], [class*="overlay"], [class*="dimmer"], [class*="scrim"]');
 			for (var k = 0; k < backdrops.length; k++) {
-				var style = window.getComputedStyle(backdrops[k]);
-				if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-				var z = style.zIndex;
-				if (z && parseInt(z) > 50) {
-					try { backdrops[k].click(); } catch(e) {}
-				}
+			var style = window.getComputedStyle(backdrops[k]);
+			if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+			var z = style.zIndex;
+			if (z && parseInt(z) > 50) {
+				try { backdrops[k].click(); } catch(e) {}
 			}
+		}
 
-			for (var e = 0; e < 3; e++) {
-				document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true}));
-				document.dispatchEvent(new KeyboardEvent('keyup', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true}));
-			}
+		// NOTE: Escape key dispatch removed — pressing Escape during streaming
+		// cancels generation on DeepSeek and other chat sites.
 
-			var fixedOverlays = document.querySelectorAll('[style*="position: fixed"], [style*="position:fixed"]');
+		var fixedOverlays = document.querySelectorAll('[style*="position: fixed"], [style*="position:fixed"]');
 			for (var fi = 0; fi < fixedOverlays.length; fi++) {
 				var style = window.getComputedStyle(fixedOverlays[fi]);
 				var z = parseInt(style.zIndex) || 0;
@@ -1563,7 +1584,7 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 			}
 			return '';
 		}`
-		if fbResult, fbErr := page.Timeout(5*time.Second).Eval(fallbackJs); fbErr == nil {
+		if fbResult, fbErr := page.Timeout(5 * time.Second).Eval(fallbackJs); fbErr == nil {
 			resolved := fbResult.Value.Str()
 			if resolved != "" {
 				sels.Answer = resolved
@@ -1739,7 +1760,7 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 			}
 		`, sels.Answer, promptFirst, promptLast, beforeCount, postAnswerCount)
 		newIsUser := false
-		if checkRes, checkErr := page.Timeout(3*time.Second).Eval(checkPromptJs); checkErr == nil {
+		if checkRes, checkErr := page.Timeout(3 * time.Second).Eval(checkPromptJs); checkErr == nil {
 			newCount := checkRes.Value.Get("newCount").Int()
 			userMsgCount := checkRes.Value.Get("userMsgCount").Int()
 			if newCount > 0 && userMsgCount == newCount {
@@ -1829,43 +1850,43 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 			afterJsClickCount = diag2.Value.Get("answerCount").Int()
 		}
 		if afterJsClickCount == beforeCount && strings.Contains(afterJsClickText, prompt[:min(5, len(prompt))]) {
-		log.Printf("[rod] JS click also failed, trying Enter key")
-		focusJs := fmt.Sprintf(`() => { var el = document.querySelector(%q); if (el) el.focus(); return el != null; }`, sels.Input)
-		page.Eval(focusJs)
-		time.Sleep(200 * time.Millisecond)
-		if err := page.Keyboard.Press(input.Enter); err != nil {
-			log.Printf("[rod] Enter key failed: %v", err)
-		} else {
-			log.Printf("[rod] Enter key pressed as fallback")
-			time.Sleep(2 * time.Second)
-		}
-
-		var afterEnterText string
-		var afterEnterCount int
-		if diag3, err := page.Eval(diagJs); err == nil {
-			afterEnterText = diag3.Value.Get("editorText").Str()
-			afterEnterCount = diag3.Value.Get("answerCount").Int()
-		}
-		if afterEnterCount == beforeCount && strings.Contains(afterEnterText, prompt[:min(5, len(prompt))]) {
-			log.Printf("[rod] Enter key did not submit, trying Ctrl+Enter")
+			log.Printf("[rod] JS click also failed, trying Enter key")
+			focusJs := fmt.Sprintf(`() => { var el = document.querySelector(%q); if (el) el.focus(); return el != null; }`, sels.Input)
 			page.Eval(focusJs)
 			time.Sleep(200 * time.Millisecond)
-			if err := page.Keyboard.Press(input.ControlLeft); err == nil {
-				page.Keyboard.Press(input.Enter)
-				page.Keyboard.Press(input.ControlLeft)
-				log.Printf("[rod] Ctrl+Enter pressed as fallback")
+			if err := page.Keyboard.Press(input.Enter); err != nil {
+				log.Printf("[rod] Enter key failed: %v", err)
+			} else {
+				log.Printf("[rod] Enter key pressed as fallback")
 				time.Sleep(2 * time.Second)
 			}
 
-			var afterCtrlText string
-			var afterCtrlCount int
-			if diag4, err := page.Eval(diagJs); err == nil {
-				afterCtrlText = diag4.Value.Get("editorText").Str()
-				afterCtrlCount = diag4.Value.Get("answerCount").Int()
+			var afterEnterText string
+			var afterEnterCount int
+			if diag3, err := page.Eval(diagJs); err == nil {
+				afterEnterText = diag3.Value.Get("editorText").Str()
+				afterEnterCount = diag3.Value.Get("answerCount").Int()
 			}
-			if afterCtrlCount == beforeCount && strings.Contains(afterCtrlText, prompt[:min(5, len(prompt))]) {
-				log.Printf("[rod] Ctrl+Enter also failed, dumping all buttons for diagnostic")
-				btnDiagJs := fmt.Sprintf(`
+			if afterEnterCount == beforeCount && strings.Contains(afterEnterText, prompt[:min(5, len(prompt))]) {
+				log.Printf("[rod] Enter key did not submit, trying Ctrl+Enter")
+				page.Eval(focusJs)
+				time.Sleep(200 * time.Millisecond)
+				if err := page.Keyboard.Press(input.ControlLeft); err == nil {
+					page.Keyboard.Press(input.Enter)
+					page.Keyboard.Press(input.ControlLeft)
+					log.Printf("[rod] Ctrl+Enter pressed as fallback")
+					time.Sleep(2 * time.Second)
+				}
+
+				var afterCtrlText string
+				var afterCtrlCount int
+				if diag4, err := page.Eval(diagJs); err == nil {
+					afterCtrlText = diag4.Value.Get("editorText").Str()
+					afterCtrlCount = diag4.Value.Get("answerCount").Int()
+				}
+				if afterCtrlCount == beforeCount && strings.Contains(afterCtrlText, prompt[:min(5, len(prompt))]) {
+					log.Printf("[rod] Ctrl+Enter also failed, dumping all buttons for diagnostic")
+					btnDiagJs := fmt.Sprintf(`
 					() => {
 						var inputEl = document.querySelector(%q);
 						var inputRect = inputEl ? inputEl.getBoundingClientRect() : null;
@@ -1891,22 +1912,22 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 						return result;
 					}
 				`, sels.Input)
-				if btnDiagRes, btnDiagErr := page.Timeout(5*time.Second).Eval(btnDiagJs); btnDiagErr == nil {
-					arr := btnDiagRes.Value.Arr()
-					log.Printf("[rod] button diagnostic: %d buttons found (sorted by distance from input):", len(arr))
-					for i, v := range arr {
-						if i >= 10 {
-							break
+					if btnDiagRes, btnDiagErr := page.Timeout(5 * time.Second).Eval(btnDiagJs); btnDiagErr == nil {
+						arr := btnDiagRes.Value.Arr()
+						log.Printf("[rod] button diagnostic: %d buttons found (sorted by distance from input):", len(arr))
+						for i, v := range arr {
+							if i >= 10 {
+								break
+							}
+							log.Printf("[rod]   btn[%d]: tag=%s cls=%s aria=%s disabled=%v pos=(%d,%d) size=%dx%d distFromInput=%d",
+								i, v.Get("tag").Str(), v.Get("cls").Str(), v.Get("aria").Str(),
+								v.Get("disabled").Bool(), v.Get("x").Int(), v.Get("y").Int(),
+								v.Get("w").Int(), v.Get("h").Int(), v.Get("distFromInput").Int())
 						}
-						log.Printf("[rod]   btn[%d]: tag=%s cls=%s aria=%s disabled=%v pos=(%d,%d) size=%dx%d distFromInput=%d",
-							i, v.Get("tag").Str(), v.Get("cls").Str(), v.Get("aria").Str(),
-							v.Get("disabled").Bool(), v.Get("x").Int(), v.Get("y").Int(),
-							v.Get("w").Int(), v.Get("h").Int(), v.Get("distFromInput").Int())
 					}
 				}
 			}
 		}
-	}
 	}
 
 	var lastText string
@@ -1926,6 +1947,44 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	// a different structure, causing count to drop to 0 even though a full
 	// answer was captured in lastText. We use maxCount to detect this case.
 	maxCount := 0
+	// lastHTML saves the outerHTML of the last answer element captured during
+	// streaming. Sites like DeepSeek use virtual lists that recycle the answer
+	// element after streaming completes; when that happens we convert this
+	// saved HTML snapshot to Markdown instead of relying on the live DOM.
+	lastHTML := ""
+	lastHTMLTextLen := 0
+
+	// Inject JS to disable virtual list recycling (e.g. DeepSeek's
+	// ds-virtual-list-visible-items). Virtual lists remove off-screen elements
+	// to save memory, but this causes the answer element to disappear mid-stream
+	// before extraction. Setting overflow:visible and maxHeight:none on virtual
+	// list containers forces them to render all items without recycling.
+	// Also capture the answer element's outerHTML via a high-frequency interval
+	// (200ms) as a fallback in case recycling still happens.
+	stopCaptureJs := fmt.Sprintf(`() => {
+		// Disable virtual list recycling by making containers render all items.
+		document.querySelectorAll('[class*="virtual-list"], [class*="VirtualList"]').forEach(function(el) {
+			el.style.overflow = 'visible';
+			el.style.maxHeight = 'none';
+			el.style.height = 'auto';
+		});
+
+		if (window.__answerCaptureInterval) clearInterval(window.__answerCaptureInterval);
+		window.__capturedAnswerHTML = '';
+		window.__capturedAnswerTextLen = 0;
+		window.__answerCaptureInterval = setInterval(function() {
+			var els = document.querySelectorAll(%q);
+			if (els.length === 0) return;
+			var el = els[els.length - 1];
+			var text = (el.innerText || el.textContent || '').trim();
+			if (text.length > window.__capturedAnswerTextLen) {
+				window.__capturedAnswerHTML = el.outerHTML;
+				window.__capturedAnswerTextLen = text.length;
+			}
+		}, 200);
+		return 'ok';
+	}`, sels.Answer)
+	page.Timeout(3 * time.Second).Eval(stopCaptureJs)
 
 	for time.Now().Before(deadline) {
 		select {
@@ -1935,49 +1994,169 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		}
 		pollCount++
 
-		if pollCount%10 == 0 {
-			re.closeOverlays(page)
+		// NOTE: Do NOT call closeOverlays periodically during polling.
+		// closeOverlays dispatches Escape keys and clicks elements with "close"/"back"
+		// in their class, which cancels ongoing generation on DeepSeek and resets the
+		// SPA to the welcome page mid-stream. closeOverlays is only safe to call after
+		// streaming completes (at the done: label before content extraction).
+
+		// Re-inject virtual list override on every poll to catch dynamically
+		// created containers (DeepSeek creates new virtual list wrappers as the
+		// conversation grows).
+		if pollCount%5 == 0 {
+			page.Timeout(2 * time.Second).Eval(`() => { document.querySelectorAll('[class*="virtual-list"], [class*="VirtualList"]').forEach(function(el) { el.style.overflow = 'visible'; el.style.maxHeight = 'none'; el.style.height = 'auto'; }); }`)
 		}
 
 		currentCount, currentText := re.getAnswerStatus(page, sels.Answer, beforeCount, prompt)
 
-	if currentCount > maxCount {
-		maxCount = currentCount
-	}
-
-	// If we already collected substantial answer text and the element count
-	// dropped to 0 (e.g. DeepSeek removes the streaming element after
-	// completion and re-renders a different structure), treat the answer as
-	// stabilized using the last captured text instead of polling for another
-	// 120s (which crashes Chrome on long-running sessions).
-	if currentCount == 0 && maxCount > 0 && len(lastText) > 100 && pollCount >= 6 {
-		log.Printf("[rod] answer count dropped to 0 after capturing %d chars (maxCount=%d), treating as stabilized (lastText)", len(lastText), maxCount)
-		if !isStillGenerating(page) && !isThinkingText(lastText) {
-			goto done
-		}
-	}
-
-	if currentCount < beforeCount {
-		log.Printf("[rod] answer count decreased (%d -> %d), resetting baseline", beforeCount, currentCount)
-		re.closeOverlays(page)
-		if urlCheckRes, urlCheckErr := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlCheckErr == nil {
-			curURL := urlCheckRes.Value.Str()
-			if re.navigatedAwayFromChat(curURL, site.URL) {
-				log.Printf("[rod] page navigated away from chat during polling (now %s), navigating back to %s", curURL, site.URL)
-				if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
-					_ = page.WaitLoad()
-					_ = page.WaitIdle(3 * time.Second)
-					re.refreshPageAfterNavigation(page)
-					re.closeOverlays(page)
-					time.Sleep(1 * time.Second)
+		// Capture the answer element's outerHTML while it still exists in the
+		// DOM. Sites like DeepSeek use virtual lists that recycle the element
+		// after streaming completes; we'll convert this snapshot to Markdown
+		// when the live element is gone at extraction time.
+		if currentCount > 0 && len(currentText) > lastHTMLTextLen {
+			snapshotJs := fmt.Sprintf(`() => { var els = document.querySelectorAll(%q); if (els.length === 0) return ''; var el = els[els.length - 1]; return el.outerHTML; }`, sels.Answer)
+			if snapRes, snapErr := page.Timeout(3 * time.Second).Eval(snapshotJs); snapErr == nil {
+				htmlStr := snapRes.Value.Str()
+				if len(htmlStr) > len(currentText) {
+					lastHTML = htmlStr
+					lastHTMLTextLen = len(currentText)
 				}
 			}
 		}
-		beforeCount = currentCount
-		beforeText = currentText
-		lastText = ""
-		stableRounds = 0
-	}
+
+		// Preventive: scroll the answer element into view every 3 polls (1.5s)
+		// to prevent virtual scrolling (e.g. DeepSeek's ds-virtual-list-visible-items)
+		// from recycling off-screen answer elements mid-stream.
+		if currentCount > 0 && pollCount%3 == 0 {
+			page.Eval(fmt.Sprintf(`() => { var els = document.querySelectorAll(%q); if (els.length > 0) { els[els.length-1].scrollIntoView({block: 'center'}); } }`, sels.Answer))
+		}
+
+		if currentCount > maxCount {
+			maxCount = currentCount
+		}
+
+		// If we already collected substantial answer text and the element count
+		// dropped to 0 (e.g. DeepSeek's virtual list recycles off-screen elements),
+		// the live element is gone for good. Use the best available HTML snapshot
+		// (from either the high-frequency JS interval or our Go-poll capture) to
+		// extract Markdown. If no snapshot is available, wait briefly to see if
+		// the element reappears before falling back to polling text.
+		if currentCount == 0 && maxCount > 0 && len(lastText) > 100 && pollCount >= 6 {
+			// Diagnostic: check what's actually in the DOM when the element disappears.
+			diagJs := `() => {
+			var out = {};
+			out.url = window.location.href;
+			out.scrollTop = window.scrollY;
+			out.innerHeight = window.innerHeight;
+			out.bodyScrollHeight = document.body ? document.body.scrollHeight : -1;
+			out.bodyChildrenCount = document.body ? document.body.children.length : -1;
+			out.bodyInnerHtmlLen = document.body ? document.body.innerHTML.length : -1;
+			out.docInnerHtmlLen = document.documentElement.innerHTML.length;
+			out.deepseekMarkdown = document.querySelectorAll('.ds-markdown').length;
+			out.assistantMessage = document.querySelectorAll('.ds-assistant-message-main-content').length;
+			out.virtualListItems = document.querySelectorAll('.ds-virtual-list-visible-items').length;
+			out.virtualListChildren = 0;
+			var vl = document.querySelector('.ds-virtual-list-visible-items');
+			if (vl) out.virtualListChildren = vl.children.length;
+			out.stopButtons = document.querySelectorAll('[class*="stop"], [aria-label*="停止"], [aria-label*="stop"]').length;
+			var stopBtns = document.querySelectorAll('[class*="stop"], [aria-label*="停止"], [aria-label*="stop"]');
+			out.stopBtnDetails = [];
+			for (var i = 0; i < stopBtns.length && i < 3; i++) {
+				var r = stopBtns[i].getBoundingClientRect();
+				out.stopBtnDetails.push({ tag: stopBtns[i].tagName, cls: (stopBtns[i].className || '').substring(0, 60), w: r.width, h: r.height, text: (stopBtns[i].innerText || '').substring(0, 20) });
+			}
+			// Check for any visible text content
+			out.bodyTextLen = document.body ? (document.body.innerText || '').trim().length : -1;
+			out.bodyTextPreview = document.body ? (document.body.innerText || '').trim().substring(0, 200) : '';
+			return out;
+		}`
+			if diagRes, diagErr := page.Timeout(3 * time.Second).Eval(diagJs); diagErr == nil {
+				jsonBytes, _ := diagRes.Value.MarshalJSON()
+				log.Printf("[rod] recycle diag: %s", string(jsonBytes))
+			}
+
+			// Prefer the high-frequency JS-captured HTML (updates every 200ms),
+			// which is more recent than our Go-poll capture (every 500ms).
+			jsCaptureHtml := ""
+			if jsCapRes, jsCapErr := page.Timeout(2 * time.Second).Eval(`() => ({ html: window.__capturedAnswerHTML || '', textLen: window.__capturedAnswerTextLen || 0 })`); jsCapErr == nil {
+				jsCaptureHtml = jsCapRes.Value.Get("html").Str()
+				jsCaptureTextLen := jsCapRes.Value.Get("textLen").Int()
+				if len(jsCaptureHtml) > len(lastHTML) {
+					log.Printf("[rod] using JS-captured HTML snapshot (%d chars, textLen=%d) over Go-poll snapshot (%d chars)", len(jsCaptureHtml), jsCaptureTextLen, len(lastHTML))
+					lastHTML = jsCaptureHtml
+				}
+			}
+			// (Keep the JS capture interval running during the 3s wait below —
+			// it may capture newer content if the page re-renders.)
+
+			log.Printf("[rod] answer count dropped to 0 after capturing %d chars (maxCount=%d, htmlSnapshot=%d chars)", len(lastText), maxCount, len(lastHTML))
+			if !isStillGenerating(page) && !isThinkingText(lastText) {
+				// The page might be re-rendering (SPA transition). Wait up to 8s
+				// for the page to re-render and the answer element to reappear.
+				// DeepSeek's SPA sometimes blanks the entire page body during
+				// re-render; the element comes back after a few seconds.
+				for waitRound := 0; waitRound < 4; waitRound++ {
+					time.Sleep(2 * time.Second)
+					recheckCount, recheckText := re.getAnswerStatus(page, sels.Answer, beforeCount, prompt)
+					if recheckCount > 0 && len(recheckText) >= len(lastText) {
+						log.Printf("[rod] answer element reappeared after %ds wait (count=%d textLen=%d >= lastText=%d), continuing poll", (waitRound+1)*2, recheckCount, len(recheckText), len(lastText))
+						// Restart JS capture interval for the new element.
+						page.Timeout(2 * time.Second).Eval(fmt.Sprintf(`() => { if (window.__answerCaptureInterval) clearInterval(window.__answerCaptureInterval); window.__capturedAnswerHTML = ''; window.__capturedAnswerTextLen = 0; window.__answerCaptureInterval = setInterval(function() { var els = document.querySelectorAll(%q); if (els.length === 0) return; var el = els[els.length - 1]; var text = (el.innerText || el.textContent || '').trim(); if (text.length > window.__capturedAnswerTextLen) { window.__capturedAnswerHTML = el.outerHTML; window.__capturedAnswerTextLen = text.length; } }, 200); }`, sels.Answer))
+						lastText = recheckText
+						stableRounds = 0
+						goto continuePolling
+					}
+					log.Printf("[rod] answer element still not reappeared after %ds wait (recheckCount=%d recheckTextLen=%d, lastText=%d)", (waitRound+1)*2, recheckCount, len(recheckText), len(lastText))
+				}
+				// Also check JS-captured HTML one more time (the 200ms interval
+				// might have captured newer content before the element disappeared).
+				if jsCapRes2, jsCapErr2 := page.Timeout(2 * time.Second).Eval(`() => ({ html: window.__capturedAnswerHTML || '', textLen: window.__capturedAnswerTextLen || 0 })`); jsCapErr2 == nil {
+					jsHtml2 := jsCapRes2.Value.Get("html").Str()
+					if len(jsHtml2) > len(lastHTML) {
+						log.Printf("[rod] updating HTML snapshot from JS capture after 3s wait (%d -> %d chars)", len(lastHTML), len(jsHtml2))
+						lastHTML = jsHtml2
+					}
+				}
+				// Stop the JS capture interval now that we're about to extract.
+				page.Timeout(2 * time.Second).Eval(`() => { if (window.__answerCaptureInterval) { clearInterval(window.__answerCaptureInterval); window.__answerCaptureInterval = null; } }`)
+				log.Printf("[rod] answer element did not reappear after 3s, extracting from saved HTML snapshot (%d chars, lastText=%d chars)", len(lastHTML), len(lastText))
+				if len(lastHTML) > 0 {
+					h2m := &HtmlToMarkdownExtractor{}
+					if snapText, snapErr := h2m.ExtractFromHTML(page, lastHTML, prompt); snapErr == nil && len(snapText) > 50 {
+						log.Printf("[rod] HTML snapshot extraction succeeded: %d chars", len(snapText))
+						finalText = snapText
+						lastText = currentText
+						goto done
+					} else if snapErr != nil {
+						log.Printf("[rod] HTML snapshot extraction failed: %v, falling back to polling text", snapErr)
+					}
+				}
+				log.Printf("[rod] falling back to polling text (%d chars)", len(lastText))
+				goto done
+			}
+		}
+
+		if currentCount < beforeCount {
+			log.Printf("[rod] answer count decreased (%d -> %d), resetting baseline", beforeCount, currentCount)
+			re.closeOverlays(page)
+			if urlCheckRes, urlCheckErr := page.Timeout(3 * time.Second).Eval(`() => window.location.href`); urlCheckErr == nil {
+				curURL := urlCheckRes.Value.Str()
+				if re.navigatedAwayFromChat(curURL, site.URL) {
+					log.Printf("[rod] page navigated away from chat during polling (now %s), navigating back to %s", curURL, site.URL)
+					if navErr := page.Timeout(10 * time.Second).Navigate(site.URL); navErr == nil {
+						_ = page.WaitLoad()
+						_ = page.WaitIdle(3 * time.Second)
+						re.refreshPageAfterNavigation(page)
+						re.closeOverlays(page)
+						time.Sleep(1 * time.Second)
+					}
+				}
+			}
+			beforeCount = currentCount
+			beforeText = currentText
+			lastText = ""
+			stableRounds = 0
+		}
 
 		if currentCount > beforeCount && currentText == "" && pollCount >= 5 && renderRetryCount < 3 {
 			renderRetryCount++
@@ -1996,81 +2175,81 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		}
 
 		if currentCount > beforeCount && currentText != "" {
-		// Adaptive minimum polls: short answers (<2000 chars) can stabilize
-		// after 6 polls (3s), medium answers (<10000) after 12 polls (6s),
-		// long answers keep the default 20 polls (10s). This significantly
-		// reduces wait time for fast sites like DeepSeek with short answers.
-		adaptiveMin := minPollsBeforeStable
-		if len(currentText) < 2000 {
-			adaptiveMin = 6
-		} else if len(currentText) < 10000 {
-			adaptiveMin = 12
-		}
-		if currentText == lastText {
-			stableRounds++
-			if stableRounds >= requiredStable && pollCount >= adaptiveMin {
-				if isStillGenerating(page) || isThinkingText(currentText) {
-					stableRounds = 0
-					log.Printf("[rod] text stable but still generating or thinking, continuing poll (poll=%d len=%d)", pollCount, len(currentText))
-				} else {
-					log.Printf("[rod] answer stabilized after %d polls (%d chars, adaptiveMin=%d)", pollCount, len(currentText), adaptiveMin)
-					lastText = currentText
-					goto done
+			// Adaptive minimum polls: short answers (<2000 chars) can stabilize
+			// after 6 polls (3s), medium answers (<10000) after 12 polls (6s),
+			// long answers keep the default 20 polls (10s). This significantly
+			// reduces wait time for fast sites like DeepSeek with short answers.
+			adaptiveMin := minPollsBeforeStable
+			if len(currentText) < 2000 {
+				adaptiveMin = 6
+			} else if len(currentText) < 10000 {
+				adaptiveMin = 12
+			}
+			if currentText == lastText {
+				stableRounds++
+				if stableRounds >= requiredStable && pollCount >= adaptiveMin {
+					if isStillGenerating(page) || isThinkingText(currentText) {
+						stableRounds = 0
+						log.Printf("[rod] text stable but still generating or thinking, continuing poll (poll=%d len=%d)", pollCount, len(currentText))
+					} else {
+						log.Printf("[rod] answer stabilized after %d polls (%d chars, adaptiveMin=%d)", pollCount, len(currentText), adaptiveMin)
+						lastText = currentText
+						goto done
+					}
 				}
-			}
-			// Early extraction: when the text is briefly stable (2 rounds = 1s)
-			// and the element still exists, try clipboard extraction. Some sites
-			// (e.g. DeepSeek) remove the streaming element right after completion,
-			// so waiting for the full requiredStable would miss the window. If
-			// clipboard succeeds with substantial markdown text, use it directly.
-			if stableRounds >= 2 && pollCount >= 4 && len(currentText) > 200 {
-				log.Printf("[rod] early clipboard extraction attempt (stableRounds=%d poll=%d len=%d)", stableRounds, pollCount, len(currentText))
-				earlyExtractor := NewContentExtractor(sels.ContentStrategy, sels.CopyButton)
-				if earlyText, earlyErr := earlyExtractor.Extract(page, sels.Answer, beforeCount, len(currentText), prompt); earlyErr == nil && len(earlyText) > len(currentText)/2 {
-					log.Printf("[rod] early extraction succeeded: %d chars (vs polling %d), using it", len(earlyText), len(currentText))
-					finalText = earlyText
-					lastText = currentText
-					goto done
-				} else if earlyErr != nil {
-					log.Printf("[rod] early extraction failed: %v", earlyErr)
-				} else {
-					log.Printf("[rod] early extraction too short: %d chars (vs polling %d), continuing", len(earlyText), len(currentText))
+				// Early extraction: when the text is briefly stable (2 rounds = 1s)
+				// and the element still exists, try clipboard extraction. Some sites
+				// (e.g. DeepSeek) remove the streaming element right after completion,
+				// so waiting for the full requiredStable would miss the window. If
+				// clipboard succeeds with substantial markdown text, use it directly.
+				if stableRounds >= 2 && pollCount >= 4 && len(currentText) > 200 {
+					log.Printf("[rod] early clipboard extraction attempt (stableRounds=%d poll=%d len=%d)", stableRounds, pollCount, len(currentText))
+					earlyExtractor := NewContentExtractor(sels.ContentStrategy, sels.CopyButton)
+					if earlyText, earlyErr := earlyExtractor.Extract(page, sels.Answer, beforeCount, len(currentText), prompt); earlyErr == nil && len(earlyText) > len(currentText)/2 {
+						log.Printf("[rod] early extraction succeeded: %d chars (vs polling %d), using it", len(earlyText), len(currentText))
+						finalText = earlyText
+						lastText = currentText
+						goto done
+					} else if earlyErr != nil {
+						log.Printf("[rod] early extraction failed: %v", earlyErr)
+					} else {
+						log.Printf("[rod] early extraction too short: %d chars (vs polling %d), continuing", len(earlyText), len(currentText))
+					}
 				}
-			}
-		} else {
-			stableRounds = 0
-			lastText = currentText
-			if pollCount <= 5 || pollCount%20 == 0 {
-				log.Printf("[rod] polling... count=%d text_len=%d", currentCount, len(currentText))
-			}
-		}
-		} else if currentCount == beforeCount && beforeCount > 0 && currentText != "" && currentText != beforeText {
-		// Same adaptive minimum for same-count branch (element text updated in place)
-		adaptiveMinSame := minPollsBeforeStable
-		if len(currentText) < 2000 {
-			adaptiveMinSame = 6
-		} else if len(currentText) < 10000 {
-			adaptiveMinSame = 12
-		}
-		if currentText == lastText {
-		stableRounds++
-		if stableRounds >= requiredStable && pollCount >= adaptiveMinSame {
-			if isStillGenerating(page) || isThinkingText(currentText) {
-				stableRounds = 0
-				log.Printf("[rod] text stable (same count) but still generating or thinking, continuing poll (poll=%d len=%d)", pollCount, len(currentText))
 			} else {
-				log.Printf("[rod] answer stabilized (same count) after %d polls (%d chars, adaptiveMin=%d)", pollCount, len(currentText), adaptiveMinSame)
-				goto done
+				stableRounds = 0
+				lastText = currentText
+				if pollCount <= 5 || pollCount%20 == 0 {
+					log.Printf("[rod] polling... count=%d text_len=%d", currentCount, len(currentText))
+				}
+			}
+		} else if currentCount == beforeCount && beforeCount > 0 && currentText != "" && currentText != beforeText {
+			// Same adaptive minimum for same-count branch (element text updated in place)
+			adaptiveMinSame := minPollsBeforeStable
+			if len(currentText) < 2000 {
+				adaptiveMinSame = 6
+			} else if len(currentText) < 10000 {
+				adaptiveMinSame = 12
+			}
+			if currentText == lastText {
+				stableRounds++
+				if stableRounds >= requiredStable && pollCount >= adaptiveMinSame {
+					if isStillGenerating(page) || isThinkingText(currentText) {
+						stableRounds = 0
+						log.Printf("[rod] text stable (same count) but still generating or thinking, continuing poll (poll=%d len=%d)", pollCount, len(currentText))
+					} else {
+						log.Printf("[rod] answer stabilized (same count) after %d polls (%d chars, adaptiveMin=%d)", pollCount, len(currentText), adaptiveMinSame)
+						goto done
+					}
+				}
+			} else {
+				stableRounds = 0
+				lastText = currentText
+				if pollCount <= 5 || pollCount%20 == 0 {
+					log.Printf("[rod] polling (same count)... text_len=%d", len(currentText))
+				}
 			}
 		}
-	} else {
-		stableRounds = 0
-		lastText = currentText
-		if pollCount <= 5 || pollCount%20 == 0 {
-			log.Printf("[rod] polling (same count)... text_len=%d", len(currentText))
-		}
-	}
-	}
 
 		if pollCount == 10 && currentCount == 0 {
 			log.Printf("[rod] configured answer selector %q found 0 elements after 10 polls, trying fallback selectors", sels.Answer)
@@ -2200,22 +2379,22 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 					}
 				}
 			}
-		log.Printf("[rod] no viable answer elements after 30 polls (count=%d before=%d), trying fallback selectors", currentCount, beforeCount)
-		promptSnippet := prompt[:min(20, len(prompt))]
-		fbSelectors30 := []string{
-			`[class*=markdown]`, `[class*=message-content]`, `[class*=prose]`,
-			`[class*=answer]`, `[class*=response]`, `[class*=assistant]`,
-			`[class*=chat-message]`, `[class*=bubble]`, `[class*=content-card]`,
-			`[class*=receive]`, `[class*=msg-content]`, `[class*=answer-content]`,
-			`[class*=result-content]`, `[class*=md-body]`, `[class*=md-content]`,
-			`[class*=markdown-body]`, `[class*=text-block]`, `[class*=msg-text]`,
-			`[class*=flow-markdown]`, `[class*=rich-text]`, `[class*=text-content]`,
-			`[class*=output-content]`, `[class*=chat-content]`,
-			`[class*=conversation-content]`, `[class*=detail-content]`,
-		}
-		fbFound := false
-		for _, fbSel := range fbSelectors30 {
-			fbJs := fmt.Sprintf(`() => {
+			log.Printf("[rod] no viable answer elements after 30 polls (count=%d before=%d), trying fallback selectors", currentCount, beforeCount)
+			promptSnippet := prompt[:min(20, len(prompt))]
+			fbSelectors30 := []string{
+				`[class*=markdown]`, `[class*=message-content]`, `[class*=prose]`,
+				`[class*=answer]`, `[class*=response]`, `[class*=assistant]`,
+				`[class*=chat-message]`, `[class*=bubble]`, `[class*=content-card]`,
+				`[class*=receive]`, `[class*=msg-content]`, `[class*=answer-content]`,
+				`[class*=result-content]`, `[class*=md-body]`, `[class*=md-content]`,
+				`[class*=markdown-body]`, `[class*=text-block]`, `[class*=msg-text]`,
+				`[class*=flow-markdown]`, `[class*=rich-text]`, `[class*=text-content]`,
+				`[class*=output-content]`, `[class*=chat-content]`,
+				`[class*=conversation-content]`, `[class*=detail-content]`,
+			}
+			fbFound := false
+			for _, fbSel := range fbSelectors30 {
+				fbJs := fmt.Sprintf(`() => {
 				var els = document.querySelectorAll(%q);
 				var totalCount = 0;
 				var count = 0;
@@ -2232,25 +2411,25 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 				}
 				return {count: count, totalCount: totalCount, text: maxText.substring(0, 5000)};
 			}`, fbSel, promptSnippet)
-			if fbRes, fbErr := page.Timeout(3 * time.Second).Eval(fbJs); fbErr == nil {
-				fbCount := fbRes.Value.Get("count").Int()
-				fbTotal := fbRes.Value.Get("totalCount").Int()
-				fbText := fbRes.Value.Get("text").Str()
-				if fbCount > 0 && len(fbText) > 200 {
-					log.Printf("[rod] fallback selector %q found %d non-prompt elements (total=%d, textLen=%d), switching from %q", fbSel, fbCount, fbTotal, len(fbText), sels.Answer)
-					sels.Answer = fbSel
-					beforeCount = fbTotal
-					beforeText = fbText
-					lastText = ""
-					stableRounds = 0
-					fbFound = true
-					goto continuePolling
+				if fbRes, fbErr := page.Timeout(3 * time.Second).Eval(fbJs); fbErr == nil {
+					fbCount := fbRes.Value.Get("count").Int()
+					fbTotal := fbRes.Value.Get("totalCount").Int()
+					fbText := fbRes.Value.Get("text").Str()
+					if fbCount > 0 && len(fbText) > 200 {
+						log.Printf("[rod] fallback selector %q found %d non-prompt elements (total=%d, textLen=%d), switching from %q", fbSel, fbCount, fbTotal, len(fbText), sels.Answer)
+						sels.Answer = fbSel
+						beforeCount = fbTotal
+						beforeText = fbText
+						lastText = ""
+						stableRounds = 0
+						fbFound = true
+						goto continuePolling
+					}
 				}
 			}
-		}
-		if !fbFound {
-			log.Printf("[rod] no fallback selector found elements excluding prompt, dumping diagnostics")
-		}
+			if !fbFound {
+				log.Printf("[rod] no fallback selector found elements excluding prompt, dumping diagnostics")
+			}
 			fullDiagJs := `() => {
 				var candidates = [];
 				var allEls = document.querySelectorAll('div, p, span, article, section, pre, td, li, blockquote');
@@ -2375,10 +2554,6 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 
 	continuePolling:
 
-		if pollCount%10 == 0 && pollCount > 0 {
-			re.closeOverlays(page)
-		}
-
 		if pollCount%20 == 0 {
 			log.Printf("[rod] still polling... count=%d before=%d poll=%d", currentCount, beforeCount, pollCount)
 		}
@@ -2412,6 +2587,8 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	}
 
 done:
+	// Stop the high-frequency JS capture interval (if still running).
+	page.Timeout(2 * time.Second).Eval(`() => { if (window.__answerCaptureInterval) { clearInterval(window.__answerCaptureInterval); window.__answerCaptureInterval = null; } }`)
 	log.Printf("[rod] answer stabilized, extracting content (strategy=%s)", sels.ContentStrategy)
 
 	// If early extraction already set finalText (e.g. clipboard succeeded during
@@ -2474,7 +2651,7 @@ done:
 				}
 				return JSON.stringify(parts);
 			}`, sels.Answer, promptCheck)
-			if stripRes, stripErr := page.Timeout(5*time.Second).Eval(stripJs); stripErr == nil {
+			if stripRes, stripErr := page.Timeout(5 * time.Second).Eval(stripJs); stripErr == nil {
 				var indices []int
 				if json.Unmarshal([]byte(stripRes.Value.Str()), &indices) == nil && len(indices) > 0 {
 					extractJs := fmt.Sprintf(`() => {
@@ -2611,7 +2788,7 @@ done:
 						}
 						return parts.join('\n\n');
 					}`, sels.Answer, stripRes.Value.Str())
-					if reExtractRes, reErr := page.Timeout(10*time.Second).Eval(extractJs); reErr == nil {
+					if reExtractRes, reErr := page.Timeout(10 * time.Second).Eval(extractJs); reErr == nil {
 						reText := reExtractRes.Value.Str()
 						if len(reText) > 50 && len(reText) > len(finalText)/2 {
 							log.Printf("[rod] re-extracted without prompt element: %d chars (was %d)", len(reText), len(finalText))

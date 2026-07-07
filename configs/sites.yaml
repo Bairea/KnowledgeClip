@@ -40,11 +40,11 @@ sites:
       engine:
         primary: cdp
         selectors:
-            answer: .ds-markdown
+            answer: '.ds-assistant-message-main-content'
             content_strategy: clipboard
             copy_button: ""
             input: textarea
-            submit: div[class*=send]
+            submit: 'div.ds-button--primary'
             wait_for: textarea
       format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
       cookie_file: ""

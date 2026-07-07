@@ -517,6 +517,19 @@ WebSocket 消息协议与 `internal/api/websocket.go` 的 `MessageUpdate` 严格
   - DeepSeek Turn 2（复用 session）：返回 236 字符，包含代码块（`3 + 1 = 4`）、标题、表格，`startIdx=1` 正确提取第二个答案元素
   - Qwen：URL 跳转至 `/chat/<session-id>` 而非 `/record`，无额外标签，Slate.js 输入和提交正常
 
+### 2026-07-07 修复 GLM 思考内容混入答案
+
+根因：(1) GLM 的 `.answer-content` 选择器包裹整条消息（assistant 名称 + 思考区域 + 正式答案 + 页脚），`htmlToMd` 在树遍历时未跳过思考区域子树，将思考文本混入答案；(2) `isInThinking` 函数不识别 GLM 特有的思考类名（`advance-thinking`、`thinking-item`、`thinking-area`、`text-advance-thinking-content`），无法过滤思考元素；(3) 早期提取（`stableRounds>=2 && pollCount>=4`）在 GLM 思考阶段触发——思考文本在模型推理步骤间短暂稳定，被误判为答案完成，提取到 513 字符纯思考内容（含"跳过思考"、"分析请求"、"起草内容"等标记）。
+
+- `internal/engine/content_extractor.go`：
+  - **`isInThinking` 两处更新**（ClipboardExtractor + HtmlToMarkdownExtractor）：添加 `thinking-item`、`thinking-area`、`advance-thinking`、`text-advance-thinking` 等 GLM 思考类名，过滤思考区域内的复制按钮和 answer 元素
+  - **`htmlToMd` convert 函数新增思考区域跳过**：树遍历时检查子元素 class，匹配 `advance-thinking`/`think-block`/`thinking-block`/`thinking-item`/`thinking-area`/`thinking-content`/`thinking-process`/`reasoning-block`/`reasoning-content`/`reasoning-text`/`thought-block`/`thought-content`/`text-advance-thinking`/`cot-block` 的元素及其整个子树直接 `continue` 跳过。同时跳过 `assistant-name`（GLM 的 "ChatGLM" 标签）和 `interact-container`（"以上内容为 AI 生成" 页脚）
+- `internal/engine/rod_engine.go`：
+  - **新增 `looksLikeThinking(text)` 函数**：检查文本是否包含 `跳过思考`、`起草内容`、`思考过程`、`skip thinking` 等思考阶段标记
+  - **早期提取增加思考内容守卫**：`currentText` 或提取结果包含思考标记时跳过早期提取，重置 `stableRounds` 继续轮询，等待思考完成后的正式答案
+  - **`done:` 正常提取增加思考内容守卫**：提取结果像思考内容时改用 `HtmlToMarkdownExtractor` 重新提取（html2md 树遍历会跳过思考子树），仍不行则回退到轮询文本
+- 验证结果：GLM Turn 1 返回 1737 字符，以"### 您好！我是清言"开头的正式答案，包含表格、标题、列表、代码块，无思考过程内容；思考阶段（poll=9, 364 字符）被 `looksLikeThinking` 正确跳过，思考完成后（poll=52, 1639 字符）才触发提取
+
 ## 开发与验证约定
 
 每次修改代码后，必须按以下顺序执行编译与运行：

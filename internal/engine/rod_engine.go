@@ -207,6 +207,26 @@ func cleanupLockFiles(userDataDir string) {
 	log.Printf("[rod] cleaned up lock files in %s", userDataDir)
 }
 
+// looksLikeThinking reports whether the text is likely thinking/reasoning
+// content rather than the final answer. GLM renders a "跳过思考" (skip
+// thinking) button and a "起草内容" (draft content) label while the model
+// reasons internally; these markers only appear during the thinking phase.
+func looksLikeThinking(text string) bool {
+	thinkMarkers := []string{
+		"跳过思考",
+		"起草内容",
+		"思考过程",
+		"skip thinking",
+		"Skip thinking",
+	}
+	for _, m := range thinkMarkers {
+		if strings.Contains(text, m) {
+			return true
+		}
+	}
+	return false
+}
+
 func readDevToolsActivePort(userDataDir string) string {
 	data, err := os.ReadFile(filepath.Join(userDataDir, "DevToolsActivePort"))
 	if err != nil {
@@ -2202,14 +2222,22 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 				// (e.g. DeepSeek) remove the streaming element right after completion,
 				// so waiting for the full requiredStable would miss the window. If
 				// clipboard succeeds with substantial markdown text, use it directly.
-				if stableRounds >= 2 && pollCount >= 4 && len(currentText) > 200 {
+				// Skip when the text looks like thinking/reasoning content (GLM shows
+				// a "跳过思考" button while reasoning); the stable pause is the model
+				// between thought steps, not the final answer.
+				if stableRounds >= 2 && pollCount >= 4 && len(currentText) > 200 && !looksLikeThinking(currentText) {
 					log.Printf("[rod] early clipboard extraction attempt (stableRounds=%d poll=%d len=%d)", stableRounds, pollCount, len(currentText))
 					earlyExtractor := NewContentExtractor(sels.ContentStrategy, sels.CopyButton)
 					if earlyText, earlyErr := earlyExtractor.Extract(page, sels.Answer, beforeCount, len(currentText), prompt); earlyErr == nil && len(earlyText) > len(currentText)/2 {
-						log.Printf("[rod] early extraction succeeded: %d chars (vs polling %d), using it", len(earlyText), len(currentText))
-						finalText = earlyText
-						lastText = currentText
-						goto done
+						if looksLikeThinking(earlyText) {
+							log.Printf("[rod] early extraction result looks like thinking content (%d chars), continuing to poll", len(earlyText))
+							stableRounds = 0
+						} else {
+							log.Printf("[rod] early extraction succeeded: %d chars (vs polling %d), using it", len(earlyText), len(currentText))
+							finalText = earlyText
+							lastText = currentText
+							goto done
+						}
 					} else if earlyErr != nil {
 						log.Printf("[rod] early extraction failed: %v", earlyErr)
 					} else {
@@ -2605,6 +2633,20 @@ done:
 		if extractErr != nil {
 			log.Printf("[rod] content extraction failed: %v, falling back to polling text", extractErr)
 			finalText = lastText
+		} else if looksLikeThinking(extractText) {
+			// The clipboard extractor may have captured the thinking region
+			// (GLM wraps the whole message in .answer-content). Re-try with
+			// the html2md extractor which prunes thinking subtrees during the
+			// tree walk.
+			log.Printf("[rod] extracted text looks like thinking content (%d chars), re-trying with html2md", len(extractText))
+			h2m := &HtmlToMarkdownExtractor{}
+			if h2mText, h2mErr := h2m.Extract(page, sels.Answer, beforeCount, len(lastText), prompt); h2mErr == nil && len(h2mText) > 50 && !looksLikeThinking(h2mText) {
+				log.Printf("[rod] html2md re-extraction succeeded (%d chars), using it", len(h2mText))
+				finalText = h2mText
+			} else {
+				log.Printf("[rod] html2md re-extraction did not help, falling back to polling text (%d chars)", len(lastText))
+				finalText = lastText
+			}
 		} else {
 			finalText = extractText
 		}

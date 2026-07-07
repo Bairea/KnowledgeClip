@@ -143,23 +143,28 @@ func (e *ClipboardExtractor) tryGenericCandidates(page *rod.Page, answerSelector
 			}
 
 			function isInThinking(el) {
-				var parent = el.parentElement;
-				for (var i = 0; i < 6 && parent; i++) {
-					var pcls = (parent.getAttribute('class') || '').toLowerCase();
-					// Only match explicit thinking/reasoning container classes.
-					// Avoid broad words like 'mind'/'analysis'/'reflect' that match
-					// legitimate answer containers and cause the answer to be filtered.
-					if (pcls.indexOf('think-block') >= 0 || pcls.indexOf('think-content') >= 0 ||
-						pcls.indexOf('think_process') >= 0 || pcls.indexOf('thinking-block') >= 0 ||
-						pcls.indexOf('thinking-content') >= 0 || pcls.indexOf('thinking-process') >= 0 ||
-						pcls.indexOf('reasoning-block') >= 0 || pcls.indexOf('reasoning-content') >= 0 ||
-						pcls.indexOf('reasoning-text') >= 0 || pcls.indexOf('thought-block') >= 0 ||
-						pcls.indexOf('thought-content') >= 0 || pcls.indexOf('thought-process') >= 0 ||
-						pcls.indexOf('chain-of-thought') >= 0 || pcls.indexOf('cot-block') >= 0 ||
-						pcls.indexOf('inner-mono') >= 0 || pcls.indexOf('deep-think') >= 0 ||
-						pcls.indexOf('pre-think') >= 0) {
-						return true;
-					}
+			var parent = el.parentElement;
+			for (var i = 0; i < 6 && parent; i++) {
+				var pcls = (parent.getAttribute('class') || '').toLowerCase();
+				// Only match explicit thinking/reasoning container classes.
+				// Avoid broad words like 'mind'/'analysis'/'reflect' that match
+				// legitimate answer containers and cause the answer to be filtered.
+				if (pcls.indexOf('think-block') >= 0 || pcls.indexOf('think-content') >= 0 ||
+					pcls.indexOf('think_process') >= 0 || pcls.indexOf('thinking-block') >= 0 ||
+					pcls.indexOf('thinking-content') >= 0 || pcls.indexOf('thinking-process') >= 0 ||
+					pcls.indexOf('thinking-item') >= 0 || pcls.indexOf('thinking-area') >= 0 ||
+					pcls.indexOf('advance-thinking') >= 0 ||
+					pcls.indexOf('reasoning-block') >= 0 || pcls.indexOf('reasoning-content') >= 0 ||
+					pcls.indexOf('reasoning-text') >= 0 || pcls.indexOf('thought-block') >= 0 ||
+					pcls.indexOf('thought-content') >= 0 || pcls.indexOf('thought-process') >= 0 ||
+					pcls.indexOf('chain-of-thought') >= 0 || pcls.indexOf('cot-block') >= 0 ||
+					pcls.indexOf('inner-mono') >= 0 || pcls.indexOf('deep-think') >= 0 ||
+					pcls.indexOf('pre-think') >= 0 ||
+					// GLM uses 'text-advance-thinking-content' on the answer-content-wrap
+					// that holds the thinking text, distinct from the real answer-content-wrap.
+					pcls.indexOf('text-advance-thinking') >= 0) {
+					return true;
+				}
 					var ptag = parent.tagName;
 					if (ptag === 'DETAILS') {
 						var psum = parent.querySelector('summary');
@@ -419,14 +424,32 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 						var tag = child.tagName.toLowerCase();
 						var cls = (child.getAttribute('class') || '').toLowerCase();
 						if (tag === 'button' || tag === 'svg' || tag === 'path' ||
-							cls.indexOf('copy') >= 0 || cls.indexOf('download') >= 0 ||
-							cls.indexOf('clipboard') >= 0 || cls.indexOf('toolbar') >= 0 ||
-							cls.indexOf('action') >= 0 || cls.indexOf('code-header') >= 0 ||
-							cls.indexOf('table-cap') >= 0 || cls.indexOf('table-label') >= 0 ||
-							cls.indexOf('lang-label') >= 0 || cls.indexOf('code-lang') >= 0 ||
-							cls.indexOf('code-action') >= 0 || cls.indexOf('header-row') >= 0) {
-							continue;
-						}
+						cls.indexOf('copy') >= 0 || cls.indexOf('download') >= 0 ||
+						cls.indexOf('clipboard') >= 0 || cls.indexOf('toolbar') >= 0 ||
+						cls.indexOf('action') >= 0 || cls.indexOf('code-header') >= 0 ||
+						cls.indexOf('table-cap') >= 0 || cls.indexOf('table-label') >= 0 ||
+						cls.indexOf('lang-label') >= 0 || cls.indexOf('code-lang') >= 0 ||
+						cls.indexOf('code-action') >= 0 || cls.indexOf('header-row') >= 0) {
+						continue;
+					}
+					// Skip thinking/reasoning regions and their whole subtree (GLM,
+					// DeepSeek, etc.). The matched answer selector may wrap the entire
+					// message including the thinking block, so htmlToMd must prune it
+					// during the tree walk.
+					if (cls.indexOf('advance-thinking') >= 0 || cls.indexOf('think-block') >= 0 ||
+						cls.indexOf('thinking-block') >= 0 || cls.indexOf('thinking-item') >= 0 ||
+						cls.indexOf('thinking-area') >= 0 || cls.indexOf('thinking-content') >= 0 ||
+						cls.indexOf('thinking-process') >= 0 || cls.indexOf('reasoning-block') >= 0 ||
+						cls.indexOf('reasoning-content') >= 0 || cls.indexOf('reasoning-text') >= 0 ||
+						cls.indexOf('thought-block') >= 0 || cls.indexOf('thought-content') >= 0 ||
+						cls.indexOf('text-advance-thinking') >= 0 || cls.indexOf('cot-block') >= 0) {
+						continue;
+					}
+					// Skip the assistant name label and the "AI generated" footer that
+					// GLM renders inside .answer-content.
+					if (cls.indexOf('assistant-name') >= 0 || cls.indexOf('interact-container') >= 0) {
+						continue;
+					}
 						var ownText = '';
 						for (var j = 0; j < child.childNodes.length; j++) {
 							if (child.childNodes[j].nodeType === 3) ownText += child.childNodes[j].textContent;
@@ -599,22 +622,25 @@ func (e *HtmlToMarkdownExtractor) Extract(page *rod.Page, answerSelector string,
 			if (els.length === 0) return {count: 0, text: ''};
 
 			function isInThinking(el) {
-				var parent = el.parentElement;
-				for (var i = 0; i < 5 && parent; i++) {
-					var cls = (parent.getAttribute('class') || '').toLowerCase();
-					if (cls.indexOf('think-block') >= 0 || cls.indexOf('think-content') >= 0 ||
-						cls.indexOf('think_process') >= 0 || cls.indexOf('thinking-block') >= 0 ||
-						cls.indexOf('thinking-content') >= 0 || cls.indexOf('thinking-process') >= 0 ||
-						cls.indexOf('reasoning-block') >= 0 || cls.indexOf('reasoning-content') >= 0 ||
-						cls.indexOf('reasoning-text') >= 0 || cls.indexOf('thought-block') >= 0 ||
-						cls.indexOf('thought-content') >= 0 || cls.indexOf('thought-process') >= 0 ||
-						cls.indexOf('chain-of-thought') >= 0 || cls.indexOf('cot-block') >= 0) {
-						return true;
-					}
-					parent = parent.parentElement;
+			var parent = el.parentElement;
+			for (var i = 0; i < 5 && parent; i++) {
+				var cls = (parent.getAttribute('class') || '').toLowerCase();
+				if (cls.indexOf('think-block') >= 0 || cls.indexOf('think-content') >= 0 ||
+					cls.indexOf('think_process') >= 0 || cls.indexOf('thinking-block') >= 0 ||
+					cls.indexOf('thinking-content') >= 0 || cls.indexOf('thinking-process') >= 0 ||
+					cls.indexOf('thinking-item') >= 0 || cls.indexOf('thinking-area') >= 0 ||
+					cls.indexOf('advance-thinking') >= 0 ||
+					cls.indexOf('reasoning-block') >= 0 || cls.indexOf('reasoning-content') >= 0 ||
+					cls.indexOf('reasoning-text') >= 0 || cls.indexOf('thought-block') >= 0 ||
+					cls.indexOf('thought-content') >= 0 || cls.indexOf('thought-process') >= 0 ||
+					cls.indexOf('chain-of-thought') >= 0 || cls.indexOf('cot-block') >= 0 ||
+					cls.indexOf('text-advance-thinking') >= 0) {
+					return true;
 				}
-				return false;
+				parent = parent.parentElement;
 			}
+			return false;
+		}
 
 			function filterOutNested(els) {
 			var result = [];

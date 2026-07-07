@@ -50,6 +50,11 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/ws", s.hub.handleWebSocket)
 }
 
+// Port returns the actual port the server is using (0 if not yet determined)
+func (s *Server) Port() int {
+	return s.port
+}
+
 // Run 启动服务器，尝试从 basePort 开始绑定，最多尝试 maxAttempts 次
 // 返回实际绑定的端口
 func (s *Server) Run(basePort int) (int, error) {

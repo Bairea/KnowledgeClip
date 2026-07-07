@@ -25,6 +25,7 @@ Desktop.ini
 
 # Debug artifacts
 *.log
+*.stackdump
 session_*.json
 session_*.report.json
 test_*.json
@@ -32,3 +33,6 @@ tmp_*.json
 qwen_*.txt
 *.png
 inspect_render.*
+
+# Build binary (root level)
+server.exe

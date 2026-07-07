@@ -1,24 +1,24 @@
 # 跨平台单一可执行文件打包实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: COMPLETED** - All tasks executed successfully via subagent-driven development.
 
 **Goal:** 生成跨平台可执行文件，用户双击即可使用，集成系统托盘、自动打开浏览器、端口自动检测。
 
 **Architecture:** 使用 systray 库实现系统托盘，修改 Server 支持端口检测，main.go 集成托盘启动流程，Makefile 新增交叉编译目标。
 
-**Tech Stack:** Go 1.23, github.com/getlantern/systray, gin
+**Tech Stack:** Go 1.23, github.com/getlantern/systray v1.2.2, gin
 
 ---
 
-## 文件结构
+## 实际文件结构
 
 | 文件 | 职责 |
 |------|------|
 | `cmd/server/main.go` | 入口：创建目录、端口检测、启动服务、集成托盘 |
-| `internal/api/server.go` | HTTP 服务器：端口检测逻辑、优雅关闭 |
-| `internal/systrayapp/systray.go` | 新增：托盘图标、菜单、浏览器打开 |
-| `assets/icon.ico` | 新增：托盘图标文件 |
-| `Makefile` | 更新：新增 cross-build 目标 |
+| `internal/api/server.go` | HTTP 服务器：端口检测逻辑、优雅关闭、Port() getter |
+| `internal/systrayapp/systray.go` | 托盘图标、菜单、浏览器打开 |
+| `internal/systrayapp/icon.ico` | 托盘图标文件（embed） |
+| `Makefile` | cross-build 和 build-windows 目标 |
 
 ---
 

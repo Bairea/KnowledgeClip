@@ -1,7 +1,7 @@
 ---
 title: 跨平台单一可执行文件打包
 date: 2026-07-07
-status: approved
+status: implemented
 ---
 
 # 跨平台单一可执行文件打包设计
@@ -35,12 +35,12 @@ status: approved
 
 使用 `github.com/getlantern/systray` 库（跨平台，支持 Windows/macOS/Linux）。
 
-**托盘图标**：内嵌一个简单的 ICO/PNG 图标，存放在 `assets/icon.ico`。
+**托盘图标**：内嵌一个简单的 ICO/PNG 图标，存放在 `internal/systrayapp/icon.ico`（与代码同包以便 embed）。
 
 **菜单项**：
-- 标题显示实际端口：`KnowledgeClip (端口: 8080)`
-- "打开界面" — 调用系统命令打开浏览器
-- "退出" — 调用 `systray.Quit()`，触发服务关闭
+- 标题显示实际端口：`KnowledgeClip (port: 8080)`
+- "Open Interface" — 调用系统命令打开浏览器
+- "Exit" — 调用 `systray.Quit()`，触发服务关闭
 
 **集成方式**：`main.go` 中调用 `systray.Run(onReady, onExit)`，`onReady` 中启动 HTTP 服务和托盘菜单。
 
@@ -108,26 +108,28 @@ cross-build:
 	GOOS=darwin GOARCH=arm64 go build -o dist/KnowledgeClip-macos-arm64 cmd/server/main.go
 ```
 
-## 文件结构变化
+## 实际文件结构
 
 ```
 KnowledgeClip/
 ├── cmd/
 │   └── server/
-│       └── main.go          # 修改：集成 systray、端口检测、目录创建
+│       └── main.go              # 修改：集成 systray、端口检测、目录创建
 ├── internal/
 │   ├── api/
-│   │   └── server.go        # 修改：端口可配置，返回实际端口
+│   │   └── server.go            # 修改：端口检测、优雅关闭、Port() getter
+│   ├── systrayapp/
+│   │   ├── systray.go           # 新增：托盘模块
+│   │   └── icon.ico             # 新增：托盘图标
 │   └── ...
-├── assets/
-│   └── icon.ico             # 新增：托盘图标
-├── build.sh                 # 新增：跨平台构建脚本（可选，替代 Makefile）
-└── dist/                    # 新增：构建产物输出目录
+├── dist/                        # 构建产物输出目录（gitignore）
+│   └── KnowledgeClip-windows.exe
+└── Makefile                     # 更新：cross-build 目标
 ```
 
 ## 依赖新增
 
-- `github.com/getlantern/systray` — 系统托盘
+- `github.com/getlantern/systray v1.2.2` — 系统托盘
 
 ## 限制与后续 TODO
 

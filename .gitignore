@@ -17,6 +17,7 @@ data.db-wal
 
 # Build binary
 bin/
+dist/
 
 # OS
 Thumbs.db

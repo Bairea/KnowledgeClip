@@ -3,6 +3,7 @@ module chat-aggregator
 go 1.23
 
 require (
+	github.com/getlantern/systray v1.2.2
 	github.com/gin-gonic/gin v1.10.0
 	github.com/go-rod/rod v0.116.2
 	github.com/google/uuid v1.6.0
@@ -26,7 +27,6 @@ require (
 	github.com/getlantern/hex v0.0.0-20190417191902-c6586a6fe0b7 // indirect
 	github.com/getlantern/hidden v0.0.0-20190325191715-f02dbb02be55 // indirect
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
-	github.com/getlantern/systray v1.2.2 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.4 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect

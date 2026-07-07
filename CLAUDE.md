@@ -29,6 +29,27 @@ npm run build   # tsc + vite build，输出到 ../internal/api/static/
 
 后端默认监听 `:8080`。`npm run build` 会 `emptyOutDir: true` 清空 `internal/api/static`，构建后必须重新 `go build`，否则旧二进制仍服务旧资源。
 
+### 跨平台编译
+
+生成可发布的可执行文件：
+
+```bash
+make cross-build    # 编译 Windows + macOS (Intel/ARM) 版本
+make build-windows  # 仅编译 Windows 版本
+```
+
+产物输出到 `dist/` 目录：
+- `KnowledgeClip-windows.exe` — Windows 版本（双击运行，带系统托盘）
+- `KnowledgeClip-macos-intel` — macOS Intel 版本
+- `KnowledgeClip-macos-arm64` — macOS Apple Silicon 版本
+
+首次运行会自动创建 `configs/`、`data/`、`.browser-data/` 目录和默认配置文件。
+
+**macOS 用户注意：**
+首次运行可能被 macOS Gatekeeper 阻止。解决方法：
+1. 右键点击文件 → 选择"打开" → 在弹出对话框中点击"打开"
+2. 或在"系统设置" → "隐私与安全性"中允许运行
+
 **构建顺序陷阱**：`internal/api/static.go` 用了 `//go:embed all:static` 把前端产物打进二进制。`go build` 时只会 embed **当时目录里**的产物。所以改完前端代码后：
 1. **先**跑 `cd web && npm run build`（写入新 hash 的 `index-*.js`/`index-*.css` 到 `internal/api/static/`）
 2. **再**跑 `go build`（embed 这些新文件）

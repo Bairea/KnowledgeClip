@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS site_cookies (
 	migrations := []string{
 		"ALTER TABLE messages ADD COLUMN turn INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE messages ADD COLUMN prompt TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sites ADD COLUMN selected INTEGER NOT NULL DEFAULT 1",
 	}
 	for _, m := range migrations {
 		conn.Exec(m)

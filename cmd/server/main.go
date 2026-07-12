@@ -119,12 +119,10 @@ func createDirectories() {
 	// Create default config if not exists
 	configPath := filepath.Join("configs", "sites.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		defaultConfig := `sites: []
-`
-		err := os.WriteFile(configPath, []byte(defaultConfig), 0644)
+		err := os.WriteFile(configPath, defaultSitesConfig, 0644)
 		if err != nil {
 			log.Fatalf("create default config: %v", err)
 		}
-		fmt.Println("Created default config: configs/sites.yaml")
+		fmt.Println("Created default config with preset sites: configs/sites.yaml")
 	}
 }

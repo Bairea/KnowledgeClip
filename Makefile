@@ -17,6 +17,7 @@ clean:
 cross-build:
 	cd web && npm run build
 	mkdir -p dist
+	rm -rf dist/configs dist/data dist/.browser-data
 	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o dist/KnowledgeClip-windows.exe cmd/server/main.go
 	GOOS=darwin GOARCH=amd64 go build -o dist/KnowledgeClip-macos-intel cmd/server/main.go
 	GOOS=darwin GOARCH=arm64 go build -o dist/KnowledgeClip-macos-arm64 cmd/server/main.go
@@ -25,4 +26,6 @@ cross-build:
 # 仅编译 Windows 版本（当前开发环境）
 build-windows:
 	cd web && npm run build
+	mkdir -p dist
+	rm -rf dist/configs dist/data dist/.browser-data
 	go build -ldflags "-H windowsgui" -o dist/KnowledgeClip-windows.exe cmd/server/main.go

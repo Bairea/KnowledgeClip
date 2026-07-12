@@ -45,6 +45,8 @@ make build-windows  # 仅编译 Windows 版本
 
 首次运行会自动创建 `configs/`、`data/`、`.browser-data/` 目录和默认配置文件。
 
+**预设站点配置**：`cmd/server/embed_config.go` 用 `//go:embed default_sites.yaml` 内嵌 7 个预设站点（Qwen / Kimi / DeepSeek / Gemini / MiniMax / GLM / Doubao），首次运行时写入 `configs/sites.yaml`，确保打包后的 exe 开箱即用。
+
 **macOS 用户注意：**
 首次运行可能被 macOS Gatekeeper 阻止。解决方法：
 1. 右键点击文件 → 选择"打开" → 在弹出对话框中点击"打开"

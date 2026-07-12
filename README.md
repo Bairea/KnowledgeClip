@@ -6,6 +6,7 @@
 
 ## 特性
 
+- **开箱即用**：打包后的 exe 内嵌 7 个预设站点配置（Qwen / Kimi / DeepSeek / Gemini / MiniMax / GLM / Doubao），首次运行自动创建，无需手动配置。
 - 多站点配置：YAML 与 SQLite 双向同步，UI 增删改即时落库。
 - 并发提问：一次输入并发推送到已勾选站点，长任务异步执行，结果通过 WebSocket 推送。
 - 浏览器引擎三层降级：go-rod (CDP) → playwright-go → ts-playwright，引擎不可用时自动切到下一层。
@@ -56,6 +57,8 @@ npm run dev    # Vite dev server，/api 与 /ws 代理到 :8080
 ```
 .
 ├── cmd/server/main.go        入口：组装 DB + 配置 + 引擎 + HTTP
+├── cmd/server/default_sites.yaml  预设站点配置（embed 到二进制）
+├── cmd/server/embed_config.go     embed 声明文件
 ├── internal/
 │   ├── api/                  Gin 路由 + WebSocket Hub
 │   │                         （server.go / chat.go / sites.go / export.go / websocket.go）

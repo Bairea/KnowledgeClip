@@ -13,6 +13,10 @@ import (
 
 const sitesConfigPath = "configs/sites.yaml"
 
+type UpdateSelectedRequest struct {
+	Selected bool `json:"selected"`
+}
+
 type CreateSiteRequest struct {
 	ID           string            `json:"id"`
 	Name         string            `json:"name"`
@@ -161,6 +165,27 @@ func (s *Server) handleDeleteSite(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+func (s *Server) handleUpdateSelected(c *gin.Context) {
+	id := c.Param("id")
+	var req UpdateSelectedRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := storage.UpdateSelected(s.db, id, req.Selected); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := s.syncConfigToYAML(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "updated"})
 }
 
 func (s *Server) handleDetectSelectors(c *gin.Context) {

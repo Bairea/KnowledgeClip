@@ -6,6 +6,7 @@ export interface Site {
   enabled: boolean
   selectors: string
   format_prompt: string
+  selected?: boolean
 }
 
 export interface Session {

@@ -7,6 +7,7 @@ sites:
       name: Qwen
       url: https://www.qianwen.com/
       enabled: true
+      selected: true
       engine:
         primary: cdp
         selectors:
@@ -22,6 +23,7 @@ sites:
       name: Kimi
       url: https://www.kimi.com/
       enabled: true
+      selected: true
       engine:
         primary: cdp
         selectors:
@@ -37,6 +39,7 @@ sites:
       name: DeepSeek
       url: https://chat.deepseek.com/
       enabled: true
+      selected: true
       engine:
         primary: cdp
         selectors:
@@ -52,6 +55,7 @@ sites:
       name: gemini
       url: https://gemini.google.com/
       enabled: true
+      selected: true
       engine:
         primary: cdp
         selectors:
@@ -67,6 +71,7 @@ sites:
       name: minimax
       url: https://agent.minimaxi.com/
       enabled: true
+      selected: true
       engine:
         primary: cdp
         selectors:
@@ -82,6 +87,7 @@ sites:
       name: glm
       url: https://chatglm.cn/
       enabled: true
+      selected: true
       engine:
         primary: cdp
         selectors:
@@ -97,6 +103,7 @@ sites:
       name: doubao
       url: https://www.doubao.com/chat/
       enabled: true
+      selected: true
       engine:
         primary: cdp
         selectors:

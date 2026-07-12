@@ -1,0 +1,5 @@
+Task 1: complete (commits 5163b98, review clean)
+Task 2: complete (commits 114f792, review clean)
+Task 3: complete (commits 5f8bf1e, review clean, scope expanded for bidirectional sync)
+Task 4: complete (included in Task 3 commit 5f8bf1e for bidirectional sync)
+Task 5: complete (commits 545d99a, review clean)

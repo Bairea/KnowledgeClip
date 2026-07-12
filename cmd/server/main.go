@@ -4,8 +4,10 @@ import (
 	"chat-aggregator/internal/api"
 	"chat-aggregator/internal/config"
 	"chat-aggregator/internal/engine"
+	"chat-aggregator/internal/models"
 	"chat-aggregator/internal/storage"
 	"chat-aggregator/internal/systrayapp"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -16,7 +18,7 @@ import (
 
 func main() {
 	// 1. Create necessary directories
-	createDirectories()
+	createDirs()
 
 	// 2. Initialize database
 	db, err := storage.NewDB("data/knowledgeclip.db")
@@ -24,25 +26,28 @@ func main() {
 		log.Fatalf("init db: %v", err)
 	}
 
-	// 3. Load config
+	// 3. Ensure config file exists (check SQLite first, restore from database if needed)
+	ensureConfig(db)
+
+	// 4. Load config
 	cfg, err := config.Load("configs/sites.yaml")
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
 
-	// 4. Sync sites to database
+	// 5. Sync sites to database
 	sites := cfg.ToModels()
 	if err := storage.SyncSites(db, sites); err != nil {
 		log.Fatalf("sync sites: %v", err)
 	}
 
-	// 5. Create engine manager
+	// 6. Create engine manager
 	manager := engine.NewManager(db)
 
-	// 6. Create server
+	// 7. Create server
 	server := api.NewServer(db, manager)
 
-	// 7. Start server in goroutine
+	// 8. Start server in goroutine
 	serverReady := make(chan int, 1)
 	go func() {
 		port, err := server.Run(8080)
@@ -52,7 +57,7 @@ func main() {
 		serverReady <- port
 	}()
 
-	// 8. Wait briefly for port detection to complete
+	// 9. Wait briefly for port detection to complete
 	// server.Run() checks port availability before starting, so we poll
 	var actualPort int
 	for i := 0; i < 20; i++ {
@@ -76,10 +81,10 @@ func main() {
 
 	fmt.Printf("Server starting on port %d\n", actualPort)
 
-	// 9. Set tray port
+	// 10. Set tray port
 	systrayapp.SetPort(actualPort)
 
-	// 10. Handle Ctrl+C for development mode
+	// 11. Handle Ctrl+C for development mode
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -88,7 +93,7 @@ func main() {
 		server.Shutdown()
 	}()
 
-	// 11. Run systray (blocks until quit)
+	// 12. Run systray (blocks until quit)
 	systrayapp.Run(func() {
 		// Tray exit callback
 		fmt.Println("Shutting down from tray...")
@@ -99,8 +104,8 @@ func main() {
 	})
 }
 
-// createDirectories creates necessary directories
-func createDirectories() {
+// createDirs creates necessary directories (called before NewDB)
+func createDirs() {
 	dirs := []string{
 		"configs",
 		"data",
@@ -115,14 +120,82 @@ func createDirectories() {
 			}
 		}
 	}
+}
 
-	// Create default config if not exists
+// ensureConfig ensures config file exists (called after NewDB)
+// Logic: Check SQLite first, restore YAML from database if configs/ deleted
+// Only write embed default config when SQLite empty AND YAML not exists
+func ensureConfig(db *storage.DB) {
 	configPath := filepath.Join("configs", "sites.yaml")
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+
+	// Check if config file already exists
+	if _, err := os.Stat(configPath); err == nil {
+		return
+	}
+
+	// Config file not exists, check if SQLite has sites data
+	hasSites, err := storage.HasSites(db)
+	if err != nil {
+		log.Fatalf("check sites in database: %v", err)
+	}
+
+	if hasSites {
+		// SQLite has data, restore YAML from database
+		sites, err := storage.GetSites(db)
+		if err != nil {
+			log.Fatalf("get sites from database: %v", err)
+		}
+
+		cfg := restoreConfigFromSites(sites)
+		if err := config.Save(configPath, cfg); err != nil {
+			log.Fatalf("restore config from database: %v", err)
+		}
+		fmt.Println("Restored config from database: configs/sites.yaml")
+	} else {
+		// SQLite empty and YAML not exists, write embed default config
 		err := os.WriteFile(configPath, defaultSitesConfig, 0644)
 		if err != nil {
 			log.Fatalf("create default config: %v", err)
 		}
 		fmt.Println("Created default config with preset sites: configs/sites.yaml")
 	}
+}
+
+// restoreConfigFromSites converts database Site models back to Config struct
+func restoreConfigFromSites(sites []models.Site) *config.Config {
+	cfg := &config.Config{
+		Global: config.GlobalConfig{
+			FormatPrompt:   "",
+			DefaultTimeout: 30,
+			MaxConcurrent:  3,
+		},
+		Sites: make([]config.SiteConfig, 0, len(sites)),
+	}
+
+	for _, s := range sites {
+		var selectors map[string]string
+		if s.Selectors != "" {
+			json.Unmarshal([]byte(s.Selectors), &selectors)
+		}
+		if selectors == nil {
+			selectors = make(map[string]string)
+		}
+
+		siteCfg := config.SiteConfig{
+			ID:       s.ID,
+			Name:     s.Name,
+			URL:      s.URL,
+			Enabled:  s.Enabled,
+			Selected: s.Selected,
+			Engine: config.EngineConfig{
+				Primary:   s.EngineType,
+				Selectors: selectors,
+			},
+			FormatPrompt: s.FormatPrompt,
+			CookieFile:   s.CookieFile,
+		}
+		cfg.Sites = append(cfg.Sites, siteCfg)
+	}
+
+	return cfg
 }

@@ -242,6 +242,7 @@ func TestSiteCreateAndGet(t *testing.T) {
 		EngineType:   "cdp",
 		Selectors:    `{"input":"#input","submit":"#submit","answer":"#answer","wait_for":"#answer"}`,
 		Enabled:      true,
+		Selected:     true,
 		FormatPrompt: "Use markdown",
 		CreatedAt:    time.Now(),
 	}
@@ -262,5 +263,96 @@ func TestSiteCreateAndGet(t *testing.T) {
 	}
 	if sites[0].FormatPrompt != "Use markdown" {
 		t.Errorf("expected format_prompt 'Use markdown', got '%s'", sites[0].FormatPrompt)
+	}
+	if !sites[0].Selected {
+		t.Error("expected site Selected=true")
+	}
+}
+
+func TestHasSites(t *testing.T) {
+	db := newTestDB(t)
+
+	hasSites, err := HasSites(db)
+	if err != nil {
+		t.Fatalf("HasSites failed: %v", err)
+	}
+	if hasSites {
+		t.Error("expected HasSites=false for empty database")
+	}
+
+	site := models.Site{
+		ID:         "test-site",
+		Name:       "Test Site",
+		URL:        "https://example.com",
+		EngineType: "cdp",
+		Enabled:    true,
+		Selected:   true,
+	}
+	if err := SaveSite(db, site); err != nil {
+		t.Fatalf("SaveSite failed: %v", err)
+	}
+
+	hasSites, err = HasSites(db)
+	if err != nil {
+		t.Fatalf("HasSites failed: %v", err)
+	}
+	if !hasSites {
+		t.Error("expected HasSites=true after adding site")
+	}
+}
+
+func TestUpdateSelected(t *testing.T) {
+	db := newTestDB(t)
+
+	site := models.Site{
+		ID:         "test-site",
+		Name:       "Test Site",
+		URL:        "https://example.com",
+		EngineType: "cdp",
+		Enabled:    true,
+		Selected:   true,
+	}
+	if err := SaveSite(db, site); err != nil {
+		t.Fatalf("SaveSite failed: %v", err)
+	}
+
+	if err := UpdateSelected(db, "test-site", false); err != nil {
+		t.Fatalf("UpdateSelected failed: %v", err)
+	}
+
+	sites, err := GetSites(db)
+	if err != nil {
+		t.Fatalf("GetSites failed: %v", err)
+	}
+	if sites[0].Selected {
+		t.Error("expected site Selected=false after update")
+	}
+
+	if err := UpdateSelected(db, "nonexistent", true); err == nil {
+		t.Error("expected error when updating nonexistent site")
+	}
+}
+
+func TestSelectedFieldPersisted(t *testing.T) {
+	db := newTestDB(t)
+
+	site := models.Site{
+		ID:         "test-site",
+		Name:       "Test Site",
+		URL:        "https://example.com",
+		EngineType: "cdp",
+		Enabled:    true,
+		Selected:   false,
+	}
+	if err := SaveSite(db, site); err != nil {
+		t.Fatalf("SaveSite failed: %v", err)
+	}
+
+	retrieved, err := GetSiteByID(db, "test-site")
+	if err != nil {
+		t.Fatalf("GetSiteByID failed: %v", err)
+	}
+	if retrieved.Selected {
+		t.Error("expected Selected=false to be persisted")
 	}
 }

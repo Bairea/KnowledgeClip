@@ -58,6 +58,7 @@ func (s *Server) handleCreateSite(c *gin.Context) {
 		EngineType:   req.EngineType,
 		Selectors:    string(selectorsJSON),
 		Enabled:      enabled,
+		Selected:     true,
 		FormatPrompt: req.FormatPrompt,
 	}
 
@@ -117,6 +118,7 @@ func (s *Server) handleUpdateSite(c *gin.Context) {
 		Selectors:    string(selectorsJSON),
 		CookieFile:   existing.CookieFile,
 		Enabled:      enabled,
+		Selected:     existing.Selected,
 		FormatPrompt: req.FormatPrompt,
 	}
 
@@ -201,6 +203,7 @@ func (s *Server) syncConfigToYAML() error {
 			Name:         site.Name,
 			URL:          site.URL,
 			Enabled:      site.Enabled,
+			Selected:     site.Selected,
 			Engine:       config.EngineConfig{Primary: site.EngineType, Selectors: selectors},
 			FormatPrompt: site.FormatPrompt,
 			CookieFile:   site.CookieFile,

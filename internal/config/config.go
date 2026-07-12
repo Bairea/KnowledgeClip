@@ -25,6 +25,7 @@ type SiteConfig struct {
 	Name         string       `yaml:"name"`
 	URL          string       `yaml:"url"`
 	Enabled      bool         `yaml:"enabled"`
+	Selected     bool         `yaml:"selected"`
 	Engine       EngineConfig `yaml:"engine"`
 	FormatPrompt string       `yaml:"format_prompt"`
 	CookieFile   string       `yaml:"cookie_file"`
@@ -74,6 +75,7 @@ func (cfg *Config) ToModels() []models.Site {
 			Selectors:    string(selectorsJSON),
 			CookieFile:   s.CookieFile,
 			Enabled:      s.Enabled,
+			Selected:     s.Selected,
 			FormatPrompt: s.FormatPrompt,
 		}
 		result = append(result, site)

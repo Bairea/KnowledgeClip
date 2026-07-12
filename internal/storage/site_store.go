@@ -15,8 +15,8 @@ func SyncSites(db *DB, sites []models.Site) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO sites (id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sites (id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt, selected)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			url = excluded.url,
@@ -24,7 +24,8 @@ func SyncSites(db *DB, sites []models.Site) error {
 			selectors = excluded.selectors,
 			cookie_file = excluded.cookie_file,
 			enabled = excluded.enabled,
-			format_prompt = excluded.format_prompt
+			format_prompt = excluded.format_prompt,
+			selected = excluded.selected
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare upsert: %w", err)
@@ -36,7 +37,11 @@ func SyncSites(db *DB, sites []models.Site) error {
 		if site.Enabled {
 			enabled = 1
 		}
-		_, err := stmt.Exec(site.ID, site.Name, site.URL, site.EngineType, site.Selectors, site.CookieFile, enabled, site.FormatPrompt)
+		selected := 0
+		if site.Selected {
+			selected = 1
+		}
+		_, err := stmt.Exec(site.ID, site.Name, site.URL, site.EngineType, site.Selectors, site.CookieFile, enabled, site.FormatPrompt, selected)
 		if err != nil {
 			return fmt.Errorf("upsert site %s: %w", site.ID, err)
 		}
@@ -54,9 +59,13 @@ func SaveSite(db *DB, site models.Site) error {
 	if site.Enabled {
 		enabled = 1
 	}
+	selected := 0
+	if site.Selected {
+		selected = 1
+	}
 	_, err := db.Conn().Exec(`
-		INSERT INTO sites (id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sites (id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt, selected)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			url = excluded.url,
@@ -64,8 +73,9 @@ func SaveSite(db *DB, site models.Site) error {
 			selectors = excluded.selectors,
 			cookie_file = excluded.cookie_file,
 			enabled = excluded.enabled,
-			format_prompt = excluded.format_prompt
-	`, site.ID, site.Name, site.URL, site.EngineType, site.Selectors, site.CookieFile, enabled, site.FormatPrompt)
+			format_prompt = excluded.format_prompt,
+			selected = excluded.selected
+	`, site.ID, site.Name, site.URL, site.EngineType, site.Selectors, site.CookieFile, enabled, site.FormatPrompt, selected)
 	if err != nil {
 		return fmt.Errorf("save site: %w", err)
 	}
@@ -77,6 +87,10 @@ func UpdateSite(db *DB, site models.Site) error {
 	if site.Enabled {
 		enabled = 1
 	}
+	selected := 0
+	if site.Selected {
+		selected = 1
+	}
 	result, err := db.Conn().Exec(`
 		UPDATE sites SET
 			name = ?,
@@ -85,9 +99,10 @@ func UpdateSite(db *DB, site models.Site) error {
 			selectors = ?,
 			cookie_file = ?,
 			enabled = ?,
-			format_prompt = ?
+			format_prompt = ?,
+			selected = ?
 		WHERE id = ?
-	`, site.Name, site.URL, site.EngineType, site.Selectors, site.CookieFile, enabled, site.FormatPrompt, site.ID)
+	`, site.Name, site.URL, site.EngineType, site.Selectors, site.CookieFile, enabled, site.FormatPrompt, selected, site.ID)
 	if err != nil {
 		return fmt.Errorf("update site: %w", err)
 	}
@@ -118,7 +133,7 @@ func DeleteSite(db *DB, id string) error {
 
 func GetSites(db *DB) ([]models.Site, error) {
 	rows, err := db.Conn().Query(`
-		SELECT id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt, created_at
+		SELECT id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt, selected, created_at
 		FROM sites
 	`)
 	if err != nil {
@@ -130,10 +145,12 @@ func GetSites(db *DB) ([]models.Site, error) {
 	for rows.Next() {
 		var site models.Site
 		var enabled int
-		if err := rows.Scan(&site.ID, &site.Name, &site.URL, &site.EngineType, &site.Selectors, &site.CookieFile, &enabled, &site.FormatPrompt, &site.CreatedAt); err != nil {
+		var selected int
+		if err := rows.Scan(&site.ID, &site.Name, &site.URL, &site.EngineType, &site.Selectors, &site.CookieFile, &enabled, &site.FormatPrompt, &selected, &site.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan site: %w", err)
 		}
 		site.Enabled = enabled != 0
+		site.Selected = selected != 0
 		sites = append(sites, site)
 	}
 
@@ -147,17 +164,47 @@ func GetSites(db *DB) ([]models.Site, error) {
 func GetSiteByID(db *DB, id string) (*models.Site, error) {
 	var site models.Site
 	var enabled int
+	var selected int
 	row := db.Conn().QueryRow(`
-		SELECT id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt, created_at
+		SELECT id, name, url, engine_type, selectors, cookie_file, enabled, format_prompt, selected, created_at
 		FROM sites
 		WHERE id = ?
 	`, id)
-	if err := row.Scan(&site.ID, &site.Name, &site.URL, &site.EngineType, &site.Selectors, &site.CookieFile, &enabled, &site.FormatPrompt, &site.CreatedAt); err != nil {
+	if err := row.Scan(&site.ID, &site.Name, &site.URL, &site.EngineType, &site.Selectors, &site.CookieFile, &enabled, &site.FormatPrompt, &selected, &site.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("scan site: %w", err)
 	}
 	site.Enabled = enabled != 0
+	site.Selected = selected != 0
 	return &site, nil
+}
+
+func HasSites(db *DB) (bool, error) {
+	var count int
+	err := db.Conn().QueryRow(`SELECT COUNT(*) FROM sites`).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("count sites: %w", err)
+	}
+	return count > 0, nil
+}
+
+func UpdateSelected(db *DB, id string, selected bool) error {
+	selectedInt := 0
+	if selected {
+		selectedInt = 1
+	}
+	result, err := db.Conn().Exec(`UPDATE sites SET selected = ? WHERE id = ?`, selectedInt, id)
+	if err != nil {
+		return fmt.Errorf("update selected: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("site not found")
+	}
+	return nil
 }

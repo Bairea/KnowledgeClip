@@ -10,6 +10,7 @@ type Site struct {
 	Selectors    string    `json:"selectors"`
 	CookieFile   string    `json:"cookie_file"`
 	Enabled      bool      `json:"enabled"`
+	Selected     bool      `json:"selected"`
 	FormatPrompt string    `json:"format_prompt"`
 	CreatedAt    time.Time `json:"created_at"`
 }

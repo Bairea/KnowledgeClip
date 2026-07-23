@@ -16,21 +16,48 @@ import (
 	"syscall"
 )
 
-func main() {
-	// 1. Create necessary directories
-	createDirs()
+// getExeDir returns the directory containing the current executable.
+// This is used to resolve resource paths relative to the exe location,
+// so the program can be run from any working directory.
+func getExeDir() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Printf("Warning: could not get executable path: %v, using working directory", err)
+		wd, _ := os.Getwd()
+		return wd
+	}
+	return filepath.Dir(exePath)
+}
 
-	// 2. Initialize database
-	db, err := storage.NewDB("data/knowledgeclip.db")
+func main() {
+	// Resolve base directory (where the executable is located)
+	baseDir := getExeDir()
+
+	// 1. Create necessary directories (relative to exe location)
+	createDirs(baseDir)
+
+	// 2. Setup log file (for debugging when running as GUI app)
+	logPath := filepath.Join(baseDir, "data", "knowledgeclip.log")
+	if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666); err == nil {
+		log.SetOutput(logFile)
+		log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	}
+
+	log.Printf("KnowledgeClip starting, base dir: %s", baseDir)
+
+	// 2. Initialize database (relative to exe location)
+	dbPath := filepath.Join(baseDir, "data", "knowledgeclip.db")
+	db, err := storage.NewDB(dbPath)
 	if err != nil {
 		log.Fatalf("init db: %v", err)
 	}
 
 	// 3. Ensure config file exists (check SQLite first, restore from database if needed)
-	ensureConfig(db)
+	ensureConfig(db, baseDir)
 
-	// 4. Load config
-	cfg, err := config.Load("configs/sites.yaml")
+	// 4. Load config (relative to exe location)
+	configPath := filepath.Join(baseDir, "configs", "sites.yaml")
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -105,11 +132,12 @@ func main() {
 }
 
 // createDirs creates necessary directories (called before NewDB)
-func createDirs() {
+// All paths are resolved relative to baseDir (the executable location)
+func createDirs(baseDir string) {
 	dirs := []string{
-		"configs",
-		"data",
-		".browser-data",
+		filepath.Join(baseDir, "configs"),
+		filepath.Join(baseDir, "data"),
+		filepath.Join(baseDir, ".browser-data"),
 	}
 
 	for _, dir := range dirs {
@@ -125,8 +153,9 @@ func createDirs() {
 // ensureConfig ensures config file exists (called after NewDB)
 // Logic: Check SQLite first, restore YAML from database if configs/ deleted
 // Only write embed default config when SQLite empty AND YAML not exists
-func ensureConfig(db *storage.DB) {
-	configPath := filepath.Join("configs", "sites.yaml")
+// All paths are resolved relative to baseDir (the executable location)
+func ensureConfig(db *storage.DB, baseDir string) {
+	configPath := filepath.Join(baseDir, "configs", "sites.yaml")
 
 	// Check if config file already exists
 	if _, err := os.Stat(configPath); err == nil {

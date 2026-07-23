@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"chat-aggregator/internal/models"
 	"chat-aggregator/internal/storage"
+	"chat-aggregator/scripts/browser-act"
 )
 
 type BrowserEngine interface {
@@ -39,6 +42,16 @@ func NewManager(db *storage.DB) *Manager {
 func getEngines(db *storage.DB) []BrowserEngine {
 	var engines []BrowserEngine
 
+	// Primary: browser-act engine (requires browser-act CLI installed)
+	scriptsDir := getScriptsDir()
+	baEngine, err := NewBrowserActEngine(scriptsDir)
+	if err != nil {
+		log.Printf("engine init: browser-act unavailable: %v", err)
+		log.Printf("engine init: sites with engine=browser-act will fall back to other engines")
+	} else {
+		engines = append(engines, baEngine)
+	}
+
 	re := NewRodEngine(db)
 	engines = append(engines, re)
 
@@ -53,6 +66,36 @@ func getEngines(db *storage.DB) []BrowserEngine {
 	return engines
 }
 
+// getScriptsDir returns the directory containing browser-act JS snippets.
+// Priority: env var > embedded resources > exe-relative path
+func getScriptsDir() string {
+	// 1. Environment variable override
+	if dir := os.Getenv("BROWSER_ACT_SCRIPTS_DIR"); dir != "" {
+		return dir
+	}
+
+	// 2. Try embedded resources (extracted to temp dir)
+	if dir, err := browseract.ExtractTo(); err == nil && dir != "" {
+		log.Printf("[browser-act] using embedded scripts: %s", dir)
+		return dir
+	}
+
+	// 3. Fallback: resolve relative to executable location
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Printf("Warning: could not get executable path: %v, using relative path", err)
+		return "scripts/browser-act"
+	}
+	exeDir := filepath.Dir(exePath)
+	return filepath.Join(exeDir, "scripts", "browser-act")
+}
+
+// UseBrowserAct returns true if the engine for the given site should use browser-act.
+// This is determined by the site's engine type in config.
+func (m *Manager) UseBrowserAct(site models.Site) bool {
+	return site.EngineType == "browser-act"
+}
+
 func (m *Manager) siteLock(siteID string) *sync.Mutex {
 	v, _ := m.locks.LoadOrStore(siteID, &sync.Mutex{})
 	return v.(*sync.Mutex)
@@ -63,8 +106,21 @@ func (m *Manager) SendMessage(ctx context.Context, site models.Site, prompt stri
 	lock.Lock()
 	defer lock.Unlock()
 
-	var errs []error
+	// If site uses browser-act, only try browser-act engine
+	if site.EngineType == "browser-act" {
+		for _, eng := range m.engines {
+			if eng.Name() == "browser-act" {
+				result, err := eng.SendMessage(ctx, site, prompt)
+				if err == nil {
+					return result, nil
+				}
+				return "", fmt.Errorf("browser-act: %w", err)
+			}
+		}
+		return "", errors.New("browser-act engine not available")
+	}
 
+	var errs []error
 	for _, eng := range m.engines {
 		result, err := eng.SendMessage(ctx, site, prompt)
 		if err == nil {
@@ -83,6 +139,10 @@ func (m *Manager) StartNewChat(sites []models.Site) {
 		go func(site models.Site) {
 			defer wg.Done()
 			for _, eng := range m.engines {
+				// Use browser-act for sites configured with it, otherwise use any NewChatStarter
+				if site.EngineType == "browser-act" && eng.Name() != "browser-act" {
+					continue
+				}
 				if ncs, ok := eng.(NewChatStarter); ok {
 					if err := ncs.StartNewChat(site); err != nil {
 						log.Printf("[manager] start new chat failed for site %s: %v", site.ID, err)

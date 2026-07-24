@@ -12,7 +12,7 @@
                      document.querySelector('button[class*="send"]');
   const readyInput = inputs.length > 0;
 
-  return JSON.stringify({
+  return globalThis.__KC_LIB__.safeStringify({
     url: location.href,
     title: document.title,
     ready: readyInput,

@@ -16,7 +16,7 @@
     (item) => item.role === "textbox" || item.className.includes("chat-input")
   );
 
-  return JSON.stringify({
+  return globalThis.__KC_LIB__.safeStringify({
     url: location.href,
     title: document.title,
     ready: Boolean(readyInput),

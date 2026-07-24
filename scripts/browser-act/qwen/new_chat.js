@@ -15,7 +15,7 @@
 
   const target = candidates.find((item) => item.matched);
   if (!target) {
-    return JSON.stringify({
+    return globalThis.__KC_LIB__.safeStringify({
       ok: false, error: "new chat button not found",
       candidates: candidates.filter((item) => item.text || item.aria).slice(0, 20)
         .map((item) => ({ text: item.text, aria: item.aria, className: item.className })),
@@ -25,7 +25,7 @@
   target.el.scrollIntoView({ block: "center" });
   target.el.click();
 
-  return JSON.stringify({
+  return globalThis.__KC_LIB__.safeStringify({
     ok: true, text: target.text, aria: target.aria, className: target.className, url: location.href,
   });
 })();

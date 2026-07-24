@@ -38,12 +38,12 @@
   // Get the last assistant message (the answer)
   const lastEl = answerEls[answerEls.length - 1];
   if (!lastEl) {
-    return JSON.stringify({
+    return globalThis.__KC_LIB__.safeStringify({
       ok: false, error: "no answer element found", selector: null, answerCount: 0,
     });
   }
 
-  return JSON.stringify({
+  return globalThis.__KC_LIB__.safeStringify({
     ok: true,
     selector: matchedSelector,
     answerCount: answerEls.length,

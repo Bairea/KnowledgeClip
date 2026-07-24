@@ -28,7 +28,7 @@
       item.dataSlate === "true"
   );
 
-  return JSON.stringify({
+  return globalThis.__KC_LIB__.safeStringify({
     url: location.href,
     title: document.title,
     ready: Boolean(readyInput),

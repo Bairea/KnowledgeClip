@@ -1,7 +1,7 @@
 (() => {
   const prompt = String(globalThis.__PAYLOAD__.prompt || "");
   if (!prompt) {
-    return JSON.stringify({ ok: false, error: "empty prompt" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "empty prompt" });
   }
   delete globalThis["__KIMI_WAIT_STATE__"];
 
@@ -9,7 +9,7 @@
     document.querySelector('[role="textbox"]') ||
     document.querySelector('[contenteditable="true"]');
   if (!input) {
-    return JSON.stringify({ ok: false, error: "input not found" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "input not found" });
   }
 
   input.focus();
@@ -41,14 +41,14 @@
           sendBtn.classList.contains("disabled");
         if (!disabled) {
           sendBtn.click();
-          resolve(JSON.stringify({ ok: true, mode, submitMode: "button" }));
+          resolve(globalThis.__KC_LIB__.safeStringify({ ok: true, mode, submitMode: "button" }));
           return;
         }
       }
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Enter", code: "Enter", which: 13, keyCode: 13, bubbles: true,
       }));
-      resolve(JSON.stringify({ ok: true, mode, submitMode: "enter" }));
+      resolve(globalThis.__KC_LIB__.safeStringify({ ok: true, mode, submitMode: "enter" }));
     }, 500);
   });
 })();

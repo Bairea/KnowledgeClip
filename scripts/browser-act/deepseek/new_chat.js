@@ -8,9 +8,9 @@
     const text = (el.innerText || el.textContent || "").trim();
     if (keywords.some(kw => text.includes(kw))) {
       el.click();
-      return JSON.stringify({ ok: true, method: "keyword", text: text });
+      return globalThis.__KC_LIB__.safeStringify({ ok: true, method: "keyword", text: text });
     }
   }
 
-  return JSON.stringify({ ok: false, error: "new chat button not found" });
+  return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "new chat button not found" });
 })();

@@ -44,7 +44,7 @@
 
   const done = Boolean(lastText) && state.stableRounds >= stableTarget;
 
-  return JSON.stringify({
+  return globalThis.__KC_LIB__.safeStringify({
     answerCount: answerEls.length,
     lastTextLen: lastText.length,
     lastTextPreview: lastText.slice(0, 120),

@@ -11,7 +11,7 @@
   const sendButton = document.querySelector('.enter-icon-container');
   const readyInput = inputs.length > 0;
 
-  return JSON.stringify({
+  return globalThis.__KC_LIB__.safeStringify({
     url: location.href,
     title: document.title,
     ready: readyInput,

@@ -1,14 +1,14 @@
 (() => {
   const prompt = String(globalThis.__PAYLOAD__.prompt || "");
   if (!prompt) {
-    return JSON.stringify({ ok: false, error: "empty prompt" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "empty prompt" });
   }
   delete globalThis["__GLM_WAIT_STATE__"];
 
   // GLM input: textarea inside #search-input-box
   const textarea = document.querySelector('textarea') || document.querySelector('#search-input-box textarea');
   if (!textarea) {
-    return JSON.stringify({ ok: false, error: "input not found" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "input not found" });
   }
 
   textarea.focus();
@@ -36,7 +36,7 @@
       setTimeout(() => {
         // Verify: URL changed (cid param added) means submit succeeded
         if (location.href !== urlBefore) {
-          resolve(JSON.stringify({ ok: true, mode: "enter", verified: "urlChanged" }));
+          resolve(globalThis.__KC_LIB__.safeStringify({ ok: true, mode: "enter", verified: "urlChanged" }));
           return;
         }
         // Fallback: click send button
@@ -48,7 +48,7 @@
           sendBtn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
           sendBtn.click();
         }
-        resolve(JSON.stringify({ ok: true, mode: "button-fallback" }));
+        resolve(globalThis.__KC_LIB__.safeStringify({ ok: true, mode: "button-fallback" }));
       }, 1500);
     }, 500);
   });

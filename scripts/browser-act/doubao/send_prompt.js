@@ -1,14 +1,14 @@
 (() => {
   const prompt = String(globalThis.__PAYLOAD__.prompt || "");
   if (!prompt) {
-    return JSON.stringify({ ok: false, error: "empty prompt" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "empty prompt" });
   }
   delete globalThis["__DOUBAO_WAIT_STATE__"];
 
   // Doubao input: textarea
   const textarea = document.querySelector('textarea');
   if (!textarea) {
-    return JSON.stringify({ ok: false, error: "input not found" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "input not found" });
   }
 
   textarea.focus();
@@ -24,12 +24,12 @@
                   document.querySelector('div[class*="send-button"]');
   if (sendBtn) {
     sendBtn.click();
-    return JSON.stringify({ ok: true, mode: "button" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: true, mode: "button" });
   }
 
   // Fallback to Enter key
   textarea.dispatchEvent(new KeyboardEvent("keydown", {
     key: "Enter", code: "Enter", which: 13, keyCode: 13, bubbles: true,
   }));
-  return JSON.stringify({ ok: true, mode: "enter" });
+  return globalThis.__KC_LIB__.safeStringify({ ok: true, mode: "enter" });
 })();

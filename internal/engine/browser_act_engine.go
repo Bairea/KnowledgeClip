@@ -1022,6 +1022,10 @@ func (e *BrowserActEngine) runCommandOnce(args ...string) (map[string]interface{
 	defer cancel()
 	cmd := exec.CommandContext(ctx, e.cmdPath, cmdArgs...)
 	hideWindow(cmd)
+	// Force Python 3 to use UTF-8 for stdin/stdout even when spawned from a
+	// GUI process on Windows, avoiding 'surrogates not allowed' errors when
+	// page DOM contains emoji or non-BMP characters.
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 
 	out, err := cmd.Output()
 	if err != nil {

@@ -1,7 +1,7 @@
 (() => {
   const prompt = String(globalThis.__PAYLOAD__.prompt || "");
   if (!prompt) {
-    return JSON.stringify({ ok: false, error: "empty prompt" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "empty prompt" });
   }
   delete globalThis["__QWEN_WAIT_STATE__"];
 
@@ -12,7 +12,7 @@
     document.querySelector("textarea");
 
   if (!input) {
-    return JSON.stringify({ ok: false, error: "input not found" });
+    return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "input not found" });
   }
 
   input.focus();
@@ -84,7 +84,7 @@
     }));
   }
 
-  return JSON.stringify({
+  return globalThis.__KC_LIB__.safeStringify({
     ok: true, mode, submitMode,
     inputTag: input.tagName,
     sendButtonDisabled: sendButton ? !!sendButton.disabled : null,

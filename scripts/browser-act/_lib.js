@@ -224,3 +224,11 @@ globalThis.__KC_LIB__.htmlToMarkdown = function (el) {
 // cleanAnswerText. Route it to htmlToMarkdown so they get structured Markdown
 // instead of flattened plain text.
 globalThis.__KC_LIB__.cleanAnswerText = globalThis.__KC_LIB__.htmlToMarkdown;
+
+// Stringify a value to JSON while stripping UTF-16 surrogate code points.
+// Some sites put emoji or malformed Unicode in button text/aria-labels;
+// returning those through browser-act's Python daemon can trigger
+// 'utf-8' codec can't encode characters ... surrogates not allowed.
+globalThis.__KC_LIB__.safeStringify = function (value) {
+  return JSON.stringify(value).replace(/[\uD800-\uDFFF]/g, "");
+};

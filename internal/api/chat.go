@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"sync"
 	"time"
 
 	"chat-aggregator/internal/models"
@@ -86,14 +85,12 @@ func (s *Server) handleChat(c *gin.Context) {
 
 	c.JSON(http.StatusOK, ChatResponse{SessionID: sessionID})
 
-	var wg sync.WaitGroup
-	for _, site := range targetSites {
-		wg.Add(1)
-		go func(site models.Site) {
-			defer wg.Done()
+	go func() {
+		batchStart := time.Now()
+		s.manager.SendToSites(context.Background(), targetSites, req.Prompt, isNewSession, func(site models.Site, content string, err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("[chat] goroutine panic: site=%s err=%v", site.ID, r)
+					log.Printf("[chat] onResult panic: site=%s err=%v", site.ID, r)
 					s.hub.Broadcast(MessageUpdate{
 						Type:      "message",
 						SessionID: sessionID,
@@ -104,18 +101,7 @@ func (s *Server) handleChat(c *gin.Context) {
 				}
 			}()
 
-			if isNewSession {
-				s.manager.StartNewChat([]models.Site{site})
-			}
-
-			log.Printf("[chat] sending to site=%s url=%s", site.ID, site.URL)
-			start := time.Now()
-			actualPrompt := req.Prompt
-			if site.FormatPrompt != "" {
-				actualPrompt = req.Prompt + "\n\n" + site.FormatPrompt
-			}
-			content, err := s.manager.SendMessage(context.Background(), site, actualPrompt)
-			elapsed := int(time.Since(start).Milliseconds())
+			elapsed := int(time.Since(batchStart).Milliseconds())
 			log.Printf("[chat] site=%s done in %dms err=%v", site.ID, elapsed, err)
 
 			msgID := uuid.New().String()
@@ -139,11 +125,7 @@ func (s *Server) handleChat(c *gin.Context) {
 				ElapsedMs: elapsed,
 				Done:      true,
 			})
-		}(site)
-	}
-
-	go func() {
-		wg.Wait()
+		})
 		s.hub.Broadcast(MessageUpdate{
 			Type:      "complete",
 			SessionID: sessionID,

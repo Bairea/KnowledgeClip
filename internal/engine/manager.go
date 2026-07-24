@@ -28,6 +28,13 @@ type NewChatStarter interface {
 	StartNewChat(site models.Site) error
 }
 
+// BatchSender can send a prompt to multiple sites through a coordinated pipeline.
+// Engines with a single-resource constraint (e.g. browser-act's single active tab)
+// implement this to avoid global-lock contention from concurrent per-site calls.
+type BatchSender interface {
+	SendBatch(ctx context.Context, sites []models.Site, prompt string, isNewSession bool, onResult func(site models.Site, content string, err error))
+}
+
 type Manager struct {
 	engines []BrowserEngine
 	locks   sync.Map
@@ -130,6 +137,58 @@ func (m *Manager) SendMessage(ctx context.Context, site models.Site, prompt stri
 	}
 
 	return "", fmt.Errorf("all engines failed: %w", errors.Join(errs...))
+}
+
+// SendToSites sends a prompt to multiple sites, calling onResult for each site
+// as it completes. Browser-act sites are routed to the batch coordinator to
+// avoid global-lock contention; other-engine sites are sent concurrently.
+func (m *Manager) SendToSites(ctx context.Context, sites []models.Site, prompt string, isNewSession bool, onResult func(site models.Site, content string, err error)) {
+	var wg sync.WaitGroup
+
+	var baSites, otherSites []models.Site
+	for _, site := range sites {
+		if site.EngineType == "browser-act" {
+			baSites = append(baSites, site)
+		} else {
+			otherSites = append(otherSites, site)
+		}
+	}
+
+	// Browser-act sites: use batch coordinator (single goroutine, round-robin)
+	if len(baSites) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, eng := range m.engines {
+				if eng.Name() != "browser-act" {
+					continue
+				}
+				if bs, ok := eng.(BatchSender); ok {
+					bs.SendBatch(ctx, baSites, prompt, isNewSession, onResult)
+				}
+				break
+			}
+		}()
+	}
+
+	// Other-engine sites: concurrent per-site (each engine manages its own pages)
+	for _, site := range otherSites {
+		wg.Add(1)
+		go func(site models.Site) {
+			defer wg.Done()
+			if isNewSession {
+				m.StartNewChat([]models.Site{site})
+			}
+			actualPrompt := prompt
+			if site.FormatPrompt != "" {
+				actualPrompt = prompt + "\n\n" + site.FormatPrompt
+			}
+			content, err := m.SendMessage(ctx, site, actualPrompt)
+			onResult(site, content, err)
+		}(site)
+	}
+
+	wg.Wait()
 }
 
 func (m *Manager) StartNewChat(sites []models.Site) {

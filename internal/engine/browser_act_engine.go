@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"chat-aggregator/internal/models"
@@ -20,13 +21,30 @@ import (
 // BrowserActEngine uses a single browser-act session with multiple tabs.
 // Each site gets its own tab within one browser window.
 type BrowserActEngine struct {
-	cmdPath    string
-	scriptsDir string
-	mu         sync.Mutex
+	cmdPath     string
+	scriptsDir  string
+	mu          sync.Mutex
 	initialized bool
-	session    string
-	browserID  string
-	tabs       map[string]*siteTab // siteID -> tab info
+	session     string
+	browserID   string
+	tabs        map[string]*siteTab // siteID -> tab info
+	libScript   string              // cached _lib.js content (shared utilities)
+	libLoaded   bool
+}
+
+// getLibScript returns the cached content of _lib.js (shared utility functions).
+// Called under e.mu (via evalOnTab -> evalScript), so no extra sync needed.
+func (e *BrowserActEngine) getLibScript() string {
+	if e.libLoaded {
+		return e.libScript
+	}
+	e.libLoaded = true
+	libPath := filepath.Join(e.scriptsDir, "_lib.js")
+	if data, err := os.ReadFile(libPath); err == nil {
+		e.libScript = string(data)
+		log.Printf("[browser-act] loaded shared lib: %s (%d bytes)", libPath, len(e.libScript))
+	}
+	return e.libScript
 }
 
 type siteTab struct {
@@ -60,16 +78,181 @@ func (e *BrowserActEngine) initialize() error {
 		return nil
 	}
 
+	// Verify browser-act CLI is functional before any daemon operations.
+	// A broken Python env, missing DLLs, or corrupt install will crash every
+	// command with exit 0xffffffff; detecting this early gives a clear error
+	// instead of cryptic daemon failures.
+	if err := e.verifyBrowserAct(); err != nil {
+		return fmt.Errorf("verify cli: %w", err)
+	}
+
+	// Clean stale browser-act daemon state before first use.
+	// browser-act stores its daemon endpoint (pid+port) in %APPDATA%/browseract/
+	// daemon-state/daemon/daemon.endpoint.json. When the previous server process
+	// exits, the endpoint file is left behind but the daemon pid is dead. On the
+	// next launch browser-act detects pid_mismatch and tries to fork a new daemon;
+	// its logging handler inherits redirected fds that become invalid after fork,
+	// raising "OSError: [Errno 9] Bad file descriptor" and crashing the CLI with
+	// exit code 0xffffffff. Removing the stale endpoint file beforehand lets
+	// browser-act start cleanly.
+	cleanStaleDaemonState()
+
 	// Find or create browser
 	browserID, err := e.findOrCreateBrowser("knowledgeclip", "KnowledgeClip multi-site browser")
 	if err != nil {
-		return fmt.Errorf("find/create browser: %w", err)
+		return fmt.Errorf("find/create browser: %w", translateBrowserActErr(err))
 	}
 	e.browserID = browserID
 
 	e.initialized = true
 	log.Printf("[browser-act] initialized: session=%s browser=%s", e.session, e.browserID)
 	return nil
+}
+
+// verifyBrowserAct runs `browser-act --version` to confirm the CLI is functional
+// before attempting daemon operations. A broken Python environment, missing DLLs,
+// or corrupt install will crash here with a clear error instead of cryptic
+// "exit status 0xffffffff" failures deep in browser list/create.
+func (e *BrowserActEngine) verifyBrowserAct() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.cmdPath, "--version")
+	hideWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("browser-act --version 超时(15s)，CLI 可能已挂起；请检查 browser-act 安装")
+		}
+		if stderr != "" {
+			return fmt.Errorf("browser-act CLI 不可用: %w [stderr: %s]", err, truncateForLog(stderr, 300))
+		}
+		return fmt.Errorf("browser-act CLI 不可用: %w", err)
+	}
+	log.Printf("[browser-act] CLI verified: %s", truncateForLog(string(out), 100))
+	return nil
+}
+
+// daemonStateDir returns browser-act's daemon-state directory.
+// browser-act resolves its data dir from %APPDATA% (Windows) / $XDG_CONFIG_HOME
+// or ~/.config (Unix). We mirror that resolution so cleanup works regardless of
+// the server's working directory.
+func daemonStateDir() string {
+	appData := os.Getenv("APPDATA")
+	if appData != "" {
+		return filepath.Join(appData, "browseract", "daemon-state", "daemon")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "browseract", "daemon-state", "daemon")
+	}
+	return filepath.Join(home, ".config", "browseract", "daemon-state", "daemon")
+}
+
+// cleanStaleDaemonState removes the daemon endpoint file when the recorded pid
+// is no longer alive. Idempotent and safe to call repeatedly.
+func cleanStaleDaemonState() {
+	dir := daemonStateDir()
+	if dir == "" {
+		return
+	}
+	endpointPath := filepath.Join(dir, "daemon.endpoint.json")
+	data, err := os.ReadFile(endpointPath)
+	if err != nil {
+		return
+	}
+	var ep struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal(data, &ep); err != nil {
+		return
+	}
+	if ep.PID <= 0 {
+		return
+	}
+	alive := processAlive(ep.PID)
+	log.Printf("[browser-act] daemon endpoint check: pid=%d alive=%v", ep.PID, alive)
+	if alive {
+		return
+	}
+	log.Printf("[browser-act] cleaning stale daemon state: pid=%d is dead, removing %s", ep.PID, endpointPath)
+	os.Remove(endpointPath)
+	// Remove leftover lock files so the next daemon start is clean
+	os.Remove(filepath.Join(dir, "daemon.run.lock"))
+	os.Remove(filepath.Join(dir, "daemon.start.lock"))
+}
+
+// cleanDaemonStateDir removes all files under browser-act's daemon-state directory.
+// This is a last-resort cleanup used when browser-act crashes: stale lock files,
+// socket files, log files, or corrupted state can all cause crashes that
+// cleanStaleDaemonState (which only checks the endpoint pid) cannot resolve.
+func cleanDaemonStateDir() {
+	dir := daemonStateDir()
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cleaned := 0
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if rmErr := os.RemoveAll(path); rmErr != nil {
+			log.Printf("[browser-act] failed to remove %s: %v", path, rmErr)
+		} else {
+			cleaned++
+		}
+	}
+	if cleaned > 0 {
+		log.Printf("[browser-act] cleaned daemon state directory: removed %d entries from %s", cleaned, dir)
+	}
+}
+
+// processAlive reports whether a process with the given pid is currently running.
+// On Windows it uses OpenProcess (the reliable kernel-level probe); on Unix it
+// uses signal 0.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		// OpenProcess returns ERROR_INVALID_PARAMETER (87) for a dead pid.
+		// PROCESS_QUERY_INFORMATION (0x400) is sufficient to probe existence.
+		handle, err := syscall.OpenProcess(syscall.PROCESS_QUERY_INFORMATION, false, uint32(pid))
+		if err != nil {
+			return false
+		}
+		syscall.CloseHandle(handle)
+		return true
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}
+
+// translateBrowserActErr converts low-level exec errors into actionable,
+// human-readable messages so users see guidance instead of hex exit codes.
+func translateBrowserActErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "exit status 0xffffffff") || strings.Contains(msg, "exit status -1") {
+		return fmt.Errorf("%w (browser-act 进程崩溃；已清理 daemon 状态并重试仍失败；请检查 Chrome 是否可用、browser-act 是否完整安装)", err)
+	}
+	if strings.Contains(msg, "executable file not found") || strings.Contains(msg, "browser-act not found") {
+		return fmt.Errorf("%w (未安装 browser-act；请运行: uv tool install browser-act-cli --python 3.12)", err)
+	}
+	return err
 }
 
 // ensureSiteTab finds or creates a tab for the site.
@@ -87,10 +270,10 @@ func (e *BrowserActEngine) ensureSiteTab(site models.Site) (*siteTab, error) {
 		delete(e.tabs, site.ID)
 	}
 
-	// Create new tab
-	tabID, err := e.openNewTab(site.URL)
+	// Open or reuse a tab for this site
+	tabID, err := e.openOrReuseTab(site.URL)
 	if err != nil {
-		return nil, fmt.Errorf("open new tab: %w", err)
+		return nil, fmt.Errorf("open tab: %w", err)
 	}
 
 	tab := &siteTab{
@@ -103,47 +286,52 @@ func (e *BrowserActEngine) ensureSiteTab(site models.Site) (*siteTab, error) {
 	return tab, nil
 }
 
-// openNewTab opens a URL in a new tab and returns the tab ID.
-func (e *BrowserActEngine) openNewTab(url string) (string, error) {
-	// Check if there are existing tabs
-	tabs, err := e.listTabs()
-	if err != nil {
-		return "", fmt.Errorf("list tabs: %w", err)
+// openOrReuseTab opens a URL in a new tab (or reuses an existing one) and returns the tab ID.
+// It also starts the browser session via `browser open` when no active session exists —
+// a browser record alone does not create a runnable session; `browser open` launches
+// Chrome and binds the session name in one step.
+func (e *BrowserActEngine) openOrReuseTab(url string) (string, error) {
+	tabs, listErr := e.listTabs()
+
+	// Reuse an existing tab whose URL matches. Handles post-navigation redirects
+	// where the tab URL is a longer path under the same origin (e.g. /chat/<id>).
+	if listErr == nil {
+		for _, tab := range tabs {
+			if tab.URL == url || strings.Contains(tab.URL, url) || strings.Contains(url, tab.URL) {
+				log.Printf("[browser-act] reusing existing tab %s for %s", tab.ID, url)
+				return tab.ID, nil
+			}
+		}
 	}
 
-	if len(tabs) == 0 {
-		// No tabs exist - open the first tab directly
-		_, err := e.runCommand("--session", e.session, "browser", "open", e.browserID, url, "--headed")
-		if err != nil {
-			return "", fmt.Errorf("open first tab: %w", err)
+	// No matching tab. If there is no active session (listTabs failed) or no tabs
+	// at all, start the session with `browser open` — this launches Chrome and
+	// creates the session. Otherwise open a new tab via navigate --new-tab.
+	if listErr != nil || len(tabs) == 0 {
+		if _, err := e.runCommand("--session", e.session, "browser", "open", e.browserID, url, "--headed"); err != nil {
+			return "", fmt.Errorf("browser open (start session): %w", err)
 		}
 	} else {
-		// Tabs exist - open a new tab
-		_, err := e.runCommand("--session", e.session, "navigate", url, "--new-tab")
-		if err != nil {
-			return "", err
+		if _, err := e.runCommand("--session", e.session, "navigate", url, "--new-tab"); err != nil {
+			return "", fmt.Errorf("navigate new-tab: %w", err)
 		}
 	}
 
-	// Get the new tab ID from tab list
-	tabs, err = e.listTabs()
+	// Find the new tab by URL.
+	tabs, err := e.listTabs()
 	if err != nil {
 		return "", fmt.Errorf("list tabs after open: %w", err)
 	}
-
-	// Find the tab with matching URL
 	for _, tab := range tabs {
 		if tab.URL == url || strings.Contains(tab.URL, url) {
 			return tab.ID, nil
 		}
 	}
-
-	// Fallback: return the last tab (most recently opened)
+	// Fallback: return the last tab (most recently opened).
 	if len(tabs) > 0 {
 		return tabs[len(tabs)-1].ID, nil
 	}
-
-	return "", fmt.Errorf("could not find new tab")
+	return "", fmt.Errorf("could not find new tab for %s", url)
 }
 
 // tabInfo represents a browser tab.
@@ -199,6 +387,19 @@ func (e *BrowserActEngine) switchToTab(tabID string) error {
 	return err
 }
 
+// evalOnTab switches to the given tab and runs a script atomically.
+// browser-act has a single "active tab": eval always runs on the active tab,
+// so switch + eval must be serialized under e.mu to prevent concurrent sites
+// from stealing each other's active tab between the switch and the eval.
+func (e *BrowserActEngine) evalOnTab(tabID, siteID, scriptName string, payload map[string]interface{}) (interface{}, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.switchToTab(tabID); err != nil {
+		return nil, fmt.Errorf("switch tab: %w", err)
+	}
+	return e.evalScript(siteID, scriptName, payload)
+}
+
 // Name returns the engine name.
 func (e *BrowserActEngine) Name() string {
 	return "browser-act"
@@ -241,18 +442,13 @@ func (e *BrowserActEngine) SendMessage(ctx context.Context, site models.Site, pr
 		return "", fmt.Errorf("ensure tab: %w", err)
 	}
 
-	// Switch to the site's tab
-	if err := e.switchToTab(tab.tabID); err != nil {
-		return "", fmt.Errorf("switch tab: %w", err)
-	}
-
 	// Check if input is ready (logged in)
-	if err := e.waitForInput(ctx, site); err != nil {
+	if err := e.waitForInput(ctx, site, tab); err != nil {
 		return "", fmt.Errorf("input not ready: %w", err)
 	}
 
-	// Send the prompt
-	sendResult, err := e.evalScript(site.ID, "send_prompt.js", map[string]interface{}{
+	// Send the prompt (switch + eval atomically)
+	sendResult, err := e.evalOnTab(tab.tabID, site.ID, "send_prompt.js", map[string]interface{}{
 		"prompt": prompt,
 	})
 	if err != nil {
@@ -261,17 +457,214 @@ func (e *BrowserActEngine) SendMessage(ctx context.Context, site models.Site, pr
 	log.Printf("[browser-act] send result: %v", sendResult)
 
 	// Wait for answer to stabilize
-	if err := e.waitForAnswer(ctx, site); err != nil {
+	if err := e.waitForAnswer(ctx, site, tab); err != nil {
 		return "", fmt.Errorf("wait for answer: %w", err)
 	}
 
 	// Extract the answer
-	answer, err := e.extractAnswer(site)
+	answer, err := e.extractAnswer(site, tab)
 	if err != nil {
 		return "", fmt.Errorf("extract answer: %w", err)
 	}
 
 	return answer, nil
+}
+
+// SendBatch sends a prompt to multiple sites through a coordinated pipeline:
+//  1. Open tabs for all sites (sequential)
+//  2. Wait for inputs (round-robin poll, single active tab per eval)
+//  3. Send prompts to ready sites (sequential)
+//  4. Wait for answers (round-robin poll, extract on completion)
+//  5. Call onResult for each site as it completes or errors.
+//
+// This replaces concurrent per-site SendMessage calls. browser-act has a single
+// active tab per session, so all eval operations must serialize through e.mu.
+// With N concurrent sites each polling waitForInput independently, the lock was
+// oversubscribed (N * ~40% duty cycle > 100%), causing a thundering herd where
+// no site could reach send_prompt. The round-robin coordinator makes only one
+// polling pass at a time, eliminating contention.
+func (e *BrowserActEngine) SendBatch(ctx context.Context, sites []models.Site, prompt string, isNewSession bool, onResult func(site models.Site, content string, err error)) {
+	log.Printf("[browser-act] SendBatch: %d sites, isNewSession=%v", len(sites), isNewSession)
+
+	if err := e.initialize(); err != nil {
+		for _, site := range sites {
+			onResult(site, "", fmt.Errorf("initialize: %w", err))
+		}
+		return
+	}
+
+	type siteState struct {
+		site    models.Site
+		tab     *siteTab
+		ready   bool
+		sent    bool
+		done    bool
+		content string
+		err     error
+	}
+	states := make([]*siteState, 0, len(sites))
+	for _, site := range sites {
+		states = append(states, &siteState{site: site})
+	}
+
+	// Phase 1: Open tabs + new chat (sequential, each evalOnTab holds e.mu briefly)
+	for _, st := range states {
+		tab, err := e.ensureSiteTab(st.site)
+		if err != nil {
+			st.err = fmt.Errorf("ensure tab: %w", err)
+			st.done = true
+			onResult(st.site, "", st.err)
+			continue
+		}
+		st.tab = tab
+
+		if isNewSession {
+			if _, err := e.evalOnTab(tab.tabID, st.site.ID, "new_chat.js", nil); err != nil {
+				log.Printf("[browser-act] new chat failed for %s: %v (non-fatal)", st.site.ID, err)
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	// Phase 2: Wait for inputs (round-robin, no concurrent lock contention)
+	inputDeadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(inputDeadline) {
+		select {
+		case <-ctx.Done():
+			for _, st := range states {
+				if !st.done {
+					st.err = ctx.Err()
+					st.done = true
+					onResult(st.site, "", st.err)
+				}
+			}
+			return
+		default:
+		}
+
+		allReady := true
+		for _, st := range states {
+			if st.done || st.ready {
+				continue
+			}
+			allReady = false
+			result, err := e.evalOnTab(st.tab.tabID, st.site.ID, "detect_input.js", nil)
+			if err == nil {
+				if rm, ok := result.(map[string]interface{}); ok && rm["ready"] == true {
+					st.ready = true
+					log.Printf("[browser-act] input ready: site=%s", st.site.ID)
+				}
+			}
+		}
+		if allReady {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	for _, st := range states {
+		if !st.done && !st.ready {
+			st.err = fmt.Errorf("input not ready after 60s (site %s) - user may need to login", st.site.ID)
+			st.done = true
+			onResult(st.site, "", st.err)
+		}
+	}
+
+	// Phase 3: Send prompts (sequential, per-site format_prompt applied)
+	for _, st := range states {
+		if st.done || !st.ready {
+			continue
+		}
+		actualPrompt := prompt
+		if st.site.FormatPrompt != "" {
+			actualPrompt = prompt + "\n\n" + st.site.FormatPrompt
+		}
+		_, err := e.evalOnTab(st.tab.tabID, st.site.ID, "send_prompt.js", map[string]interface{}{
+			"prompt": sanitizeString(actualPrompt),
+		})
+		if err != nil {
+			st.err = fmt.Errorf("send prompt: %w", err)
+			st.done = true
+			onResult(st.site, "", st.err)
+			continue
+		}
+		st.sent = true
+		log.Printf("[browser-act] prompt sent: site=%s", st.site.ID)
+	}
+
+	// Phase 4: Wait for answers (round-robin, extract + onResult on completion)
+	// Timeout scales with site count: each round-robin cycle takes ~13s per site,
+	// so 6 sites need ~78s per cycle. With stableRounds=1, we need 2 cycles (initial
+	// + 1 match) = ~156s. Base 120s + 30s per site gives enough headroom.
+	phase4Timeout := time.Duration(120+30*len(states)) * time.Second
+	answerDeadline := time.Now().Add(phase4Timeout)
+	log.Printf("[browser-act] Phase 4 timeout: %v for %d sites", phase4Timeout, len(states))
+	for time.Now().Before(answerDeadline) {
+		select {
+		case <-ctx.Done():
+			for _, st := range states {
+				if !st.done && st.sent {
+					st.err = ctx.Err()
+					st.done = true
+					onResult(st.site, "", st.err)
+				}
+			}
+			return
+		default:
+		}
+
+		allDone := true
+		for _, st := range states {
+			if st.done || !st.sent {
+				continue
+			}
+			allDone = false
+			// stableRounds=1: with N sites in round-robin, each cycle is ~13*N seconds.
+			// One matching poll means the text was stable for a full cycle (~78s for 6
+			// sites), which provides far more debounce than the rod engine's 2-3s.
+			result, err := e.evalOnTab(st.tab.tabID, st.site.ID, "wait_answer.js", map[string]interface{}{
+				"stableRounds": 1,
+			})
+			if err == nil {
+				if rm, ok := result.(map[string]interface{}); ok {
+					done, _ := rm["done"].(bool)
+					answerCount, _ := rm["answerCount"].(float64)
+					lastTextLen, _ := rm["lastTextLen"].(float64)
+					stableRounds, _ := rm["stableRounds"].(float64)
+					log.Printf("[browser-act] wait_answer site=%s done=%v answerCount=%.0f lastTextLen=%.0f stableRounds=%.0f",
+						st.site.ID, done, answerCount, lastTextLen, stableRounds)
+					if done {
+						answer, extErr := e.evalOnTab(st.tab.tabID, st.site.ID, "extract_answer.js", nil)
+						if extErr != nil {
+							st.err = fmt.Errorf("extract answer: %w", extErr)
+						} else if am, ok := answer.(map[string]interface{}); ok {
+							text, _ := am["text"].(string)
+							st.content = text
+							if text == "" {
+								st.err = fmt.Errorf("extract_answer returned empty text")
+							}
+						} else {
+							st.err = fmt.Errorf("extract_answer returned non-object: %v", answer)
+						}
+						st.done = true
+						onResult(st.site, st.content, st.err)
+					}
+				}
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	for _, st := range states {
+		if !st.done && st.sent {
+			st.err = fmt.Errorf("answer did not stabilize after %v (site %s)", phase4Timeout, st.site.ID)
+			st.done = true
+			onResult(st.site, "", st.err)
+		}
+	}
 }
 
 // StartNewChat starts a new chat for the specified site.
@@ -287,11 +680,7 @@ func (e *BrowserActEngine) StartNewChat(site models.Site) error {
 		return fmt.Errorf("ensure tab: %w", err)
 	}
 
-	if err := e.switchToTab(tab.tabID); err != nil {
-		return fmt.Errorf("switch tab: %w", err)
-	}
-
-	result, err := e.evalScript(site.ID, "new_chat.js", nil)
+	result, err := e.evalOnTab(tab.tabID, site.ID, "new_chat.js", nil)
 	if err != nil {
 		return fmt.Errorf("new chat: %w", err)
 	}
@@ -303,7 +692,7 @@ func (e *BrowserActEngine) StartNewChat(site models.Site) error {
 }
 
 // waitForInput polls until the input element is detected or timeout.
-func (e *BrowserActEngine) waitForInput(ctx context.Context, site models.Site) error {
+func (e *BrowserActEngine) waitForInput(ctx context.Context, site models.Site, tab *siteTab) error {
 	deadline := time.Now().Add(180 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -312,7 +701,7 @@ func (e *BrowserActEngine) waitForInput(ctx context.Context, site models.Site) e
 		default:
 		}
 
-		result, err := e.evalScript(site.ID, "detect_input.js", nil)
+		result, err := e.evalOnTab(tab.tabID, site.ID, "detect_input.js", nil)
 		if err == nil {
 			resultMap, ok := result.(map[string]interface{})
 			if ok && resultMap["ready"] == true {
@@ -325,7 +714,7 @@ func (e *BrowserActEngine) waitForInput(ctx context.Context, site models.Site) e
 }
 
 // waitForAnswer polls until the answer text stabilizes.
-func (e *BrowserActEngine) waitForAnswer(ctx context.Context, site models.Site) error {
+func (e *BrowserActEngine) waitForAnswer(ctx context.Context, site models.Site, tab *siteTab) error {
 	deadline := time.Now().Add(180 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -334,7 +723,7 @@ func (e *BrowserActEngine) waitForAnswer(ctx context.Context, site models.Site) 
 		default:
 		}
 
-		result, err := e.evalScript(site.ID, "wait_answer.js", map[string]interface{}{
+		result, err := e.evalOnTab(tab.tabID, site.ID, "wait_answer.js", map[string]interface{}{
 			"stableRounds": 3,
 		})
 		if err == nil {
@@ -349,8 +738,8 @@ func (e *BrowserActEngine) waitForAnswer(ctx context.Context, site models.Site) 
 }
 
 // extractAnswer extracts the final answer text from the page.
-func (e *BrowserActEngine) extractAnswer(site models.Site) (string, error) {
-	result, err := e.evalScript(site.ID, "extract_answer.js", nil)
+func (e *BrowserActEngine) extractAnswer(site models.Site, tab *siteTab) (string, error) {
+	result, err := e.evalOnTab(tab.tabID, site.ID, "extract_answer.js", nil)
 	if err != nil {
 		return "", err
 	}
@@ -373,30 +762,43 @@ func (e *BrowserActEngine) evalScript(siteID, scriptName string, payload map[str
 		return nil, fmt.Errorf("read script %s: %w", scriptPath, err)
 	}
 
-	// Build the full script with payload injection
+	// Build the full script: shared lib + payload injection + site script
+	libCode := e.getLibScript()
 	var fullScript string
 	if payload != nil {
 		payloadJSON, _ := json.Marshal(payload)
 		fullScript = fmt.Sprintf(
-			"globalThis.__PAYLOAD__ = Object.create(null);\n"+
+			"%s\n"+
+				"globalThis.__PAYLOAD__ = Object.create(null);\n"+
 				"var __payload__ = %s;\n"+
 				"Object.keys(__payload__).forEach(function(k) { globalThis.__PAYLOAD__[k] = __payload__[k]; });\n"+
 				"%s",
-			sanitizeString(string(payloadJSON)), sanitizeString(string(script)),
+			libCode, sanitizeString(string(payloadJSON)), sanitizeString(string(script)),
 		)
 	} else {
 		fullScript = fmt.Sprintf(
-			"globalThis.__PAYLOAD__ = Object.create(null);\n%s",
-			sanitizeString(string(script)),
+			"%s\n"+
+				"globalThis.__PAYLOAD__ = Object.create(null);\n%s",
+			libCode, sanitizeString(string(script)),
 		)
 	}
 
-	// Use --stdin to pass JS to avoid shell escaping issues
-	cmd := exec.Command(e.cmdPath, "--format", "json", "--session", e.session, "eval", "--stdin")
+	// Use --stdin to pass JS to avoid shell escaping issues.
+	// A timeout is mandatory: browser-act eval can hang indefinitely when the
+	// browser tab is unresponsive or the script deadlocks. Without a timeout
+	// the blocking cmd.Output() holds e.mu (via evalOnTab) and freezes the
+	// entire batch coordinator, so no site's deadline check ever runs.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.cmdPath, "--format", "json", "--session", e.session, "eval", "--stdin")
+	hideWindow(cmd)
 	cmd.Stdin = strings.NewReader(fullScript)
 
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("browser-act eval timeout after 30s (script %s)", scriptName)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			stderr := string(exitErr.Stderr)
 			var result map[string]interface{}
@@ -479,7 +881,11 @@ func findBrowserAct() (string, error) {
 // getUVToolDir returns the uv tools installation directory.
 func getUVToolDir() string {
 	if uvPath, err := exec.LookPath("uv"); err == nil {
-		out, err := exec.Command(uvPath, "tool", "dir").Output()
+		uvCtx, uvCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer uvCancel()
+		uvCmd := exec.CommandContext(uvCtx, uvPath, "tool", "dir")
+		hideWindow(uvCmd)
+		out, err := uvCmd.Output()
 		if err == nil {
 			return strings.TrimSpace(string(out))
 		}
@@ -578,12 +984,50 @@ func (e *BrowserActEngine) closeSession() error {
 }
 
 // runCommand executes a browser-act command and returns the parsed JSON output.
+// On process crash (exit 0xffffffff, caused by stale daemon state corrupting
+// browser-act's logging handler on fork), it clears the entire daemon state
+// directory and retries once so transient post-restart failures self-heal.
 func (e *BrowserActEngine) runCommand(args ...string) (map[string]interface{}, error) {
+	result, err := e.runCommandOnce(args...)
+	if err == nil {
+		return result, nil
+	}
+	// Retry only on process crash, not on timeouts or JSON-level errors.
+	if !isBrowserActCrash(err) {
+		return result, err
+	}
+	log.Printf("[browser-act] process crash on %v, clearing daemon state directory and retrying once", args)
+	cleanDaemonStateDir()
+	result2, err2 := e.runCommandOnce(args...)
+	if err2 != nil {
+		return result2, translateBrowserActErr(err2)
+	}
+	return result2, nil
+}
+
+// isBrowserActCrash reports whether err corresponds to a browser-act process
+// crash (exit code 0xffffffff / -1) rather than a normal JSON error or timeout.
+func isBrowserActCrash(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "exit status 0xffffffff") || strings.Contains(msg, "exit status -1")
+}
+
+// runCommandOnce executes a browser-act command exactly once.
+func (e *BrowserActEngine) runCommandOnce(args ...string) (map[string]interface{}, error) {
 	cmdArgs := append([]string{"--format", "json"}, args...)
-	cmd := exec.Command(e.cmdPath, cmdArgs...)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.cmdPath, cmdArgs...)
+	hideWindow(cmd)
 
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("browser-act timeout after 20s: %v", args)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			stderr := string(exitErr.Stderr)
 			var result map[string]interface{}
@@ -593,6 +1037,12 @@ func (e *BrowserActEngine) runCommand(args ...string) (map[string]interface{}, e
 					return result, fmt.Errorf("%s", errMsg)
 				}
 				return result, nil
+			}
+			// stderr is not JSON — likely a process crash. Include stderr
+			// for diagnostics: browser-act crashes (exit 0xffffffff) often
+			// emit a Python traceback here that pinpoints the root cause.
+			if trimmed := strings.TrimSpace(stderr); trimmed != "" {
+				return nil, fmt.Errorf("browser-act %v: %w [stderr: %s]", args, err, truncateForLog(trimmed, 500))
 			}
 		}
 		return nil, fmt.Errorf("browser-act %v: %w", args, err)
@@ -615,4 +1065,14 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// truncateForLog trims and truncates a string for inclusion in error messages
+// and log lines, keeping output readable while preserving the diagnostic prefix.
+func truncateForLog(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }

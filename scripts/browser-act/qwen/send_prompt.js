@@ -3,6 +3,7 @@
   if (!prompt) {
     return JSON.stringify({ ok: false, error: "empty prompt" });
   }
+  delete globalThis["__QWEN_WAIT_STATE__"];
 
   const input =
     document.querySelector('[data-slate-editor="true"]') ||

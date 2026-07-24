@@ -3,35 +3,52 @@
   if (!prompt) {
     return JSON.stringify({ ok: false, error: "empty prompt" });
   }
+  delete globalThis["__KIMI_WAIT_STATE__"];
 
-  // Kimi input: div.chat-input-editor[role="textbox"]
-  const input = document.querySelector('div.chat-input-editor') || document.querySelector('[role="textbox"]');
+  const input = document.querySelector('div.chat-input-editor') ||
+    document.querySelector('[role="textbox"]') ||
+    document.querySelector('[contenteditable="true"]');
   if (!input) {
     return JSON.stringify({ ok: false, error: "input not found" });
   }
 
   input.focus();
 
-  // Kimi uses a rich text editor - use textContent + input event
-  input.textContent = prompt;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
+  let inputOk = false;
+  let mode = "execCommand";
 
-  // Small delay for React state to update
+  try {
+    if (document.execCommand) {
+      document.execCommand("selectAll", false, null);
+      document.execCommand("insertText", false, prompt);
+      inputOk = true;
+    }
+  } catch (e) {}
+
+  if (!inputOk) {
+    input.textContent = prompt;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    mode = "textContent";
+  }
+
   return new Promise((resolve) => {
     setTimeout(() => {
-      // Try to find and click the send button
-      const sendBtn = document.querySelector('div.send-button-container');
-      if (sendBtn && !sendBtn.hasAttribute('disabled') && !sendBtn.classList.contains('disabled')) {
-        sendBtn.click();
-        resolve(JSON.stringify({ ok: true, mode: "button" }));
-      } else {
-        // Fallback to Enter key
-        input.dispatchEvent(new KeyboardEvent("keydown", {
-          key: "Enter", code: "Enter", which: 13, keyCode: 13, bubbles: true,
-        }));
-        resolve(JSON.stringify({ ok: true, mode: "enter" }));
+      const sendBtn = document.querySelector('div.send-button-container') ||
+        document.querySelector('[class*="send"]');
+      if (sendBtn) {
+        const disabled = sendBtn.hasAttribute("disabled") ||
+          sendBtn.classList.contains("disabled");
+        if (!disabled) {
+          sendBtn.click();
+          resolve(JSON.stringify({ ok: true, mode, submitMode: "button" }));
+          return;
+        }
       }
-    }, 300);
+      input.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter", code: "Enter", which: 13, keyCode: 13, bubbles: true,
+      }));
+      resolve(JSON.stringify({ ok: true, mode, submitMode: "enter" }));
+    }, 500);
   });
 })();

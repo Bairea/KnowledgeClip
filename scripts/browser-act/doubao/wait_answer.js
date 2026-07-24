@@ -7,20 +7,30 @@
     let current = el;
     for (let i = 0; i < 5 && current; i += 1) {
       const cls = String(current.className || "").toLowerCase();
-      if (cls.includes("thinking") || cls.includes("reason")) return true;
+      if (cls.includes("thinking") || cls.includes("reasoning")) return true;
       current = current.parentElement;
     }
     return false;
   };
 
-  // Doubao answer selector: .md-box-root (last one is answer)
+  // Doubao user messages are right-aligned (ancestor has "justify-end")
+  const isUserMessage = (el) => {
+    let current = el.parentElement;
+    for (let i = 0; i < 5 && current; i += 1) {
+      if (String(current.className || "").includes("justify-end")) return true;
+      current = current.parentElement;
+    }
+    return false;
+  };
+
+  // Doubao answer selector: .md-box-root (filter out user messages)
   const answerSelectors = ['.md-box-root', '[class*="md-box"]'];
 
   let answerEls = [];
   for (const selector of answerSelectors) {
     answerEls = Array.from(document.querySelectorAll(selector)).filter((el) => {
       const text = (el.innerText || el.textContent || "").trim();
-      return text.length > 0 && !isThinking(el);
+      return text.length > 0 && !isThinking(el) && !isUserMessage(el);
     });
     if (answerEls.length > 0) break;
   }

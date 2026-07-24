@@ -3,6 +3,7 @@
   if (!prompt) {
     return JSON.stringify({ ok: false, error: "empty prompt" });
   }
+  delete globalThis["__DEEPSEEK_WAIT_STATE__"];
 
   // DeepSeek input: textarea[name="search"]
   const textarea = document.querySelector('textarea[name="search"]') || document.querySelector('textarea');

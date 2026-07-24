@@ -3,6 +3,7 @@
   if (!prompt) {
     return JSON.stringify({ ok: false, error: "empty prompt" });
   }
+  delete globalThis["__DOUBAO_WAIT_STATE__"];
 
   // Doubao input: textarea
   const textarea = document.querySelector('textarea');

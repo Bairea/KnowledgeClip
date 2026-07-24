@@ -10,7 +10,7 @@
       const cls = String(current.className || "").toLowerCase();
       if (cls.indexOf("advance-thinking") >= 0 || cls.indexOf("think-block") >= 0 ||
           cls.indexOf("thinking-content") >= 0 || cls.indexOf("thinking-process") >= 0 ||
-          cls.indexOf("text-advance-thinking") >= 0 || cls.indexOf("reason") >= 0) {
+          cls.indexOf("text-advance-thinking") >= 0 || cls.indexOf("reasoning") >= 0) {
         return true;
       }
       current = current.parentElement;
@@ -50,7 +50,7 @@
     ok: true,
     selector: matchedSelector,
     answerCount: answerEls.length,
-    text: (lastEl.innerText || lastEl.textContent || "").trim(),
+    text: globalThis.__KC_LIB__.cleanAnswerText(lastEl),
     htmlPreview: lastEl.outerHTML.slice(0, 5000),
     className: String(lastEl.className || "").slice(0, 200),
   });

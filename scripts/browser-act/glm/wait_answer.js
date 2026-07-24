@@ -9,7 +9,7 @@
       const cls = String(current.className || "").toLowerCase();
       if (cls.indexOf("advance-thinking") >= 0 || cls.indexOf("think-block") >= 0 ||
           cls.indexOf("thinking-content") >= 0 || cls.indexOf("thinking-process") >= 0 ||
-          cls.indexOf("text-advance-thinking") >= 0 || cls.indexOf("reason") >= 0) {
+          cls.indexOf("text-advance-thinking") >= 0 || cls.indexOf("reasoning") >= 0) {
         return true;
       }
       current = current.parentElement;

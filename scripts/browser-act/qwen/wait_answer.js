@@ -7,7 +7,7 @@
     let current = el;
     for (let i = 0; i < 5 && current; i += 1) {
       const cls = String(current.className || "").toLowerCase();
-      if (cls.includes("thinking") || cls.includes("reason")) return true;
+      if (cls.includes("thinking") || cls.includes("reasoning")) return true;
       current = current.parentElement;
     }
     return false;
@@ -37,18 +37,13 @@
     state.stableRounds = 0;
   }
 
-  const sendButton = document.querySelector('button[aria-label="发送消息"]');
-  const done = Boolean(lastText) && (
-    (state.stableRounds >= stableTarget && (!sendButton || sendButton.disabled === false)) ||
-    state.stableRounds >= stableTarget + 3
-  );
+  const done = Boolean(lastText) && state.stableRounds >= stableTarget;
 
   return JSON.stringify({
     answerCount: answerEls.length,
     lastTextLen: lastText.length,
     lastTextPreview: lastText.slice(0, 120),
     stableRounds: state.stableRounds,
-    sendDisabled: sendButton ? !!sendButton.disabled : null,
     done,
     url: location.href,
   });

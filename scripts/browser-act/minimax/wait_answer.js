@@ -7,7 +7,7 @@
     let current = el;
     for (let i = 0; i < 5 && current; i += 1) {
       const cls = String(current.className || "").toLowerCase();
-      if (cls.includes("thinking") || cls.includes("reason")) return true;
+      if (cls.includes("thinking") || cls.includes("reasoning")) return true;
       current = current.parentElement;
     }
     return false;

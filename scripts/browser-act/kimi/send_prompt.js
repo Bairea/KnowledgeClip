@@ -3,7 +3,13 @@
   if (!prompt) {
     return globalThis.__KC_LIB__.safeStringify({ ok: false, error: "empty prompt" });
   }
-  delete globalThis["__KIMI_WAIT_STATE__"];
+  // Record how many assistant messages exist now so wait_answer.js can tell
+  // the new reply apart from the previous turn's answer.
+  globalThis["__KIMI_WAIT_STATE__"] = {
+    lastText: "",
+    stableRounds: 0,
+    assistantCount: document.querySelectorAll('.chat-content-item-assistant').length,
+  };
 
   const input = document.querySelector('div.chat-input-editor') ||
     document.querySelector('[role="textbox"]') ||

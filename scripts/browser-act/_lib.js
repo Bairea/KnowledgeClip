@@ -51,20 +51,23 @@ globalThis.__KC_LIB__.htmlToMarkdown = function (el) {
           continue;
         }
 
-        // Skip leaf elements whose own text matches common UI labels
+        // Skip leaf elements whose own text matches common UI labels.
+        // Only when the element is not inside a table cell — a cell whose
+        // text is e.g. "表格" or "内容" is real content, not UI chrome.
         var ownText = "";
         for (var j = 0; j < child.childNodes.length; j++) {
           if (child.childNodes[j].nodeType === 3) ownText += child.childNodes[j].textContent;
         }
         ownText = ownText.trim().toLowerCase();
         if (ownText.length > 0 && ownText.length < 20 &&
-            child.querySelectorAll("p,h1,h2,h3,h4,h5,h6,ul,ol,table,pre,blockquote,div").length === 0) {
+            child.querySelectorAll("p,h1,h2,h3,h4,h5,h6,ul,ol,table,pre,blockquote,div").length === 0 &&
+            !child.closest("td, th")) {
           var uiLabels = ["copy", "download", "复制", "下载", "share", "分享", "regenerate", "重新生成",
             "table", "表格", "python", "javascript", "java", "go", "golang", "rust", "typescript",
             "cpp", "c++", "c#", "c", "sql", "html", "css", "bash", "shell", "sh", "json", "yaml",
             "xml", "markdown", "md", "text", "plain", "code", "代码", "typescript", "tsx", "jsx",
             "kotlin", "swift", "ruby", "php", "perl", "scala", "dart", "r", "matlab", "lua",
-            "运行", "执行", "执行结果", "输出文本", "内容", "编辑", "导出"];
+            "运行", "执行", "执行结果", "输出文本", "内容", "编辑", "导出", "预览"];
           if (uiLabels.indexOf(ownText) >= 0) continue;
         }
 

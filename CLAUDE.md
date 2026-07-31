@@ -53,6 +53,16 @@ cmd/server/main.go
 
 ## 最近修复
 
+### 2026-07-31 修复 Kimi 回答内容缺失
+
+根因：`kimi/extract_answer.js` 取页面**全局最后一个** `.markdown-container` 作为回答，而 Kimi 把代码块渲染为独立的 `markdown-container.markdown-code` 副本（全屏/teleport 用），DOM 顺序上排在主回答之后，导致只提取到代码块，正文（标题、表格、列表、结尾段）全部丢失。
+
+修复：
+- `extract_answer.js` 改为从最后一条 `.chat-content-item-assistant` 消息提取，遍历其全部非思考 `.markdown-container`（跳过 `toolcall-content-text` 思考块与 `markdown-code` 重复容器），消息内无 markdown 容器时（如限流提示）回退到消息文本。
+- `wait_answer.js` 改跟踪整个最后 assistant 消息的文本稳定性（而非最后一个容器），并加消息计数守卫：仅当出现发送时不存在的新消息才判完成，避免把上一轮回答误判为新回答、或在代码块后的续文仍在流式时提前结束。
+- `send_prompt.js` 记录发送时的 assistant 消息数供 wait 使用。
+- `_lib.js`：uiLabels 过滤仅在不位于 `td/th` 内时生效（避免误删表格单元格内容如"**表格**"）；uiLabels 增加"预览"。
+
 ### 2026-07-31 修复 browser-act eval 代理编码崩溃
 
 根因：`browser_act_engine.go` 中 `evalScript` 函数未设置 `PYTHONUTF8=1` 环境变量，Windows 系统区域为 `zh-CN`（代码页 GB2312/cp936），Python 回退到系统默认编码 GBK 读取 stdin 中的 UTF-8 脚本，多字节序列被错误解释为 Unicode 代理码点，daemon 尝试以 UTF-8 编码返回结果时崩溃。

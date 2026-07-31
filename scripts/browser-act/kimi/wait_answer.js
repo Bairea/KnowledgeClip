@@ -1,43 +1,32 @@
 (() => {
   const stableTarget = Number(globalThis.__PAYLOAD__.stableRounds || 3);
   const key = "__KIMI_WAIT_STATE__";
-  const state = globalThis[key] || (globalThis[key] = { lastText: "", stableRounds: 0 });
+  const state = globalThis[key] || (globalThis[key] = { lastText: "", stableRounds: 0, assistantCount: 0 });
 
-  const isThinking = (el) => {
-    let current = el;
-    for (let i = 0; i < 5 && current; i += 1) {
-      const cls = String(current.className || "").toLowerCase();
-      if (cls.includes("thinking") || cls.includes("reasoning")) return true;
-      current = current.parentElement;
-    }
-    return false;
-  };
+  // Track stability of the whole last assistant message, not the last
+  // .markdown-container on the page. Kimi renders code blocks in separate
+  // duplicate containers; polling those would declare the answer done while
+  // the text after the code block is still streaming.
+  const assistants = Array.from(document.querySelectorAll('.chat-content-item-assistant'));
+  const lastMsg = assistants[assistants.length - 1] || null;
 
-  // Kimi answer selector
-  const answerSelectors = ['.markdown-container', '.markdown', '[class*="markdown"]'];
+  // Only consider this a new answer once a message beyond the one present
+  // at send time appears. Otherwise the previous turn's answer could be
+  // mistaken for the new one before Kimi starts rendering.
+  const newAnswerSeen = assistants.length > state.assistantCount;
+  const lastText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || "").trim() : "";
 
-  let answerEls = [];
-  for (const selector of answerSelectors) {
-    answerEls = Array.from(document.querySelectorAll(selector)).filter((el) => {
-      const text = (el.innerText || el.textContent || "").trim();
-      return text.length > 0 && !isThinking(el);
-    });
-    if (answerEls.length > 0) break;
-  }
-
-  const lastEl = answerEls[answerEls.length - 1] || null;
-  const lastText = lastEl ? (lastEl.innerText || lastEl.textContent || "").trim() : "";
-  if (lastText && lastText === state.lastText) {
+  if (newAnswerSeen && lastText && lastText === state.lastText) {
     state.stableRounds += 1;
-  } else if (lastText) {
+  } else if (newAnswerSeen && lastText) {
     state.lastText = lastText;
     state.stableRounds = 0;
   }
 
-  const done = Boolean(lastText) && state.stableRounds >= stableTarget;
+  const done = newAnswerSeen && Boolean(lastText) && state.stableRounds >= stableTarget;
 
   return globalThis.__KC_LIB__.safeStringify({
-    answerCount: answerEls.length,
+    answerCount: assistants.length,
     lastTextLen: lastText.length,
     lastTextPreview: lastText.slice(0, 120),
     stableRounds: state.stableRounds,

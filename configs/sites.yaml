@@ -1,110 +1,117 @@
 global:
-  format_prompt: ""
-  default_timeout: 0
-  max_concurrent: 0
+    format_prompt: ""
+    default_timeout: 0
+    max_concurrent: 0
 sites:
-  - id: qwen
-    name: Qwen
-    url: https://www.qianwen.com/
-    enabled: true
-    engine:
-      primary: browser-act
-      selectors:
-        answer: "[class*=answer-common-card]"
-        content_strategy: clipboard
-        copy_button: ""
-        input: "[contenteditable=true]"
-        submit: button[aria-label='发送消息']
-        wait_for: "[contenteditable=true]"
-    format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
-    cookie_file: ""
-  - id: kimi
-    name: Kimi
-    url: https://www.kimi.com/
-    enabled: true
-    engine:
-      primary: browser-act
-      selectors:
-        answer: "[class*=markdown]"
-        content_strategy: clipboard
-        copy_button: ""
-        input: div.chat-input-editor
-        submit: div.send-button-container
-        wait_for: div.chat-input-editor
-    format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
-    cookie_file: ""
-  - id: deepseek
-    name: DeepSeek
-    url: https://chat.deepseek.com/
-    enabled: true
-    engine:
-      primary: browser-act
-      selectors:
-        answer: ".ds-assistant-message-main-content"
-        content_strategy: clipboard
-        copy_button: ""
-        input: textarea
-        submit: "div.ds-button--primary"
-        wait_for: textarea
-    format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
-    cookie_file: ""
-  - id: gemini
-    name: gemini
-    url: https://gemini.google.com/
-    enabled: true
-    engine:
-      primary: cdp
-      selectors:
-        answer: ".markdown-main-panel"
-        content_strategy: clipboard
-        copy_button: ""
-        input: "[contenteditable=true]"
-        submit: button[aria-label='发送']
-        wait_for: ".markdown-main-panel"
-    format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
-    cookie_file: ""
-  - id: minimax
-    name: minimax
-    url: https://agent.minimaxi.com/
-    enabled: true
-    engine:
-      primary: browser-act
-      selectors:
-        answer: "[class*=message-animate-in]:not(.justify-end)"
-        content_strategy: clipboard
-        copy_button: ""
-        input: "[data-testid=message-textarea]"
-        submit: 'button[class*="send"], button[type="submit"], [class*="send"] button, [aria-label*="发送"]'
-        wait_for: "[data-testid=message-textarea]"
-    format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
-    cookie_file: ""
-  - id: glm
-    name: glm
-    url: https://chatglm.cn/
-    enabled: true
-    engine:
-      primary: browser-act
-      selectors:
-        answer: ".answer-content"
-        content_strategy: html2md
-        copy_button: ""
-        input: textarea
-        submit: "div.enter-icon-container"
-        wait_for: textarea
-    format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
-    cookie_file: ""
-  - id: doubao
-    name: doubao
-    url: https://www.doubao.com/chat/
-    enabled: true
-    engine:
-      primary: browser-act
-      selectors:
-        answer: ".md-box-root"
-        content_strategy: clipboard
-        copy_button: ""
-        input: "textarea"
-        submit: 'div[class*="send-button"]'
-        wait_for: "textarea"
-    format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
-    cookie_file: ""
+    - id: qwen
+      name: Qwen
+      url: https://www.qianwen.com/
+      enabled: true
+      selected: true
+      engine:
+        primary: browser-act
+        selectors:
+            answer: '[class*=answer-common-card]'
+            content_strategy: clipboard
+            copy_button: ""
+            input: '[contenteditable=true]'
+            submit: button[aria-label='发送消息']
+            wait_for: '[contenteditable=true]'
+      format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
+      cookie_file: ""
+    - id: kimi
+      name: Kimi
+      url: https://www.kimi.com/
+      enabled: true
+      selected: true
+      engine:
+        primary: browser-act
+        selectors:
+            answer: '[class*=markdown]'
+            content_strategy: clipboard
+            copy_button: ""
+            input: div.chat-input-editor
+            submit: div.send-button-container
+            wait_for: div.chat-input-editor
+      format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
+      cookie_file: ""
+    - id: deepseek
+      name: DeepSeek
+      url: https://chat.deepseek.com/
+      enabled: true
+      selected: true
+      engine:
+        primary: browser-act
+        selectors:
+            answer: .ds-assistant-message-main-content
+            content_strategy: clipboard
+            copy_button: ""
+            input: textarea
+            submit: div.ds-button--primary
+            wait_for: textarea
+      format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
+      cookie_file: ""
+    - id: gemini
+      name: gemini
+      url: https://gemini.google.com/
+      enabled: true
+      selected: false
+      engine:
+        primary: cdp
+        selectors:
+            answer: .markdown-main-panel
+            content_strategy: clipboard
+            copy_button: ""
+            input: '[contenteditable=true]'
+            submit: button[aria-label='发送']
+            wait_for: .markdown-main-panel
+      format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
+      cookie_file: ""
+    - id: minimax
+      name: minimax
+      url: https://agent.minimaxi.com/
+      enabled: true
+      selected: true
+      engine:
+        primary: browser-act
+        selectors:
+            answer: '[class*=message-animate-in]:not(.justify-end)'
+            content_strategy: clipboard
+            copy_button: ""
+            input: '[data-testid=message-textarea]'
+            submit: button[class*="send"], button[type="submit"], [class*="send"] button, [aria-label*="发送"]
+            wait_for: '[data-testid=message-textarea]'
+      format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
+      cookie_file: ""
+    - id: glm
+      name: glm
+      url: https://chatglm.cn/
+      enabled: true
+      selected: true
+      engine:
+        primary: browser-act
+        selectors:
+            answer: .answer-content
+            content_strategy: html2md
+            copy_button: ""
+            input: textarea
+            submit: div.enter-icon-container
+            wait_for: textarea
+      format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
+      cookie_file: ""
+    - id: doubao
+      name: doubao
+      url: https://www.doubao.com/chat/
+      enabled: true
+      selected: true
+      engine:
+        primary: browser-act
+        selectors:
+            answer: .md-box-root
+            content_strategy: clipboard
+            copy_button: ""
+            input: textarea
+            submit: div[class*="send-button"]
+            wait_for: textarea
+      format_prompt: 请使用标准Markdown格式回答，标题从第三层级（###）开始，适当使用表格、代码块、列表等结构化元素。
+      cookie_file: ""

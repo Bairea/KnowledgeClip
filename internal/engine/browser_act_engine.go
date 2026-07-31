@@ -28,6 +28,7 @@ type BrowserActEngine struct {
 	session     string
 	browserID   string
 	tabs        map[string]*siteTab // siteID -> tab info
+	activeTab   string              // tabID of the currently active tab (avoids redundant switches)
 	libScript   string              // cached _lib.js content (shared utilities)
 	libLoaded   bool
 }
@@ -73,7 +74,12 @@ func NewBrowserActEngine(scriptsDir string) (*BrowserActEngine, error) {
 func (e *BrowserActEngine) initialize() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.initializeLocked()
+}
 
+// initializeLocked is the lock-free inner logic of initialize.
+// Caller must hold e.mu.
+func (e *BrowserActEngine) initializeLocked() error {
 	if e.initialized {
 		return nil
 	}
@@ -118,6 +124,7 @@ func (e *BrowserActEngine) verifyBrowserAct() error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, e.cmdPath, "--version")
 	hideWindow(cmd)
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -394,8 +401,11 @@ func (e *BrowserActEngine) switchToTab(tabID string) error {
 func (e *BrowserActEngine) evalOnTab(tabID, siteID, scriptName string, payload map[string]interface{}) (interface{}, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if err := e.switchToTab(tabID); err != nil {
-		return nil, fmt.Errorf("switch tab: %w", err)
+	if e.activeTab != tabID {
+		if err := e.switchToTab(tabID); err != nil {
+			return nil, fmt.Errorf("switch tab: %w", err)
+		}
+		e.activeTab = tabID
 	}
 	return e.evalScript(siteID, scriptName, payload)
 }
@@ -762,8 +772,11 @@ func (e *BrowserActEngine) evalScript(siteID, scriptName string, payload map[str
 		return nil, fmt.Errorf("read script %s: %w", scriptPath, err)
 	}
 
-	// Build the full script: shared lib + payload injection + site script
-	libCode := e.getLibScript()
+	// Build the full script: shared lib + payload injection + site script.
+	// All components are sanitized to strip surrogate code points (0xD800-0xDFFF)
+	// that would crash browser-act's Python daemon with:
+	//   'utf-8' codec can't encode characters ... surrogates not allowed
+	libCode := sanitizeString(e.getLibScript())
 	var fullScript string
 	if payload != nil {
 		payloadJSON, _ := json.Marshal(payload)
@@ -783,15 +796,32 @@ func (e *BrowserActEngine) evalScript(siteID, scriptName string, payload map[str
 		)
 	}
 
-	// Use --stdin to pass JS to avoid shell escaping issues.
-	// A timeout is mandatory: browser-act eval can hang indefinitely when the
-	// browser tab is unresponsive or the script deadlocks. Without a timeout
-	// the blocking cmd.Output() holds e.mu (via evalOnTab) and freezes the
-	// entire batch coordinator, so no site's deadline check ever runs.
+	result, err := e.runEval(fullScript, scriptName)
+	if err != nil && isDaemonUnreachable(err) {
+		log.Printf("[browser-act] daemon unreachable during eval (%s), clearing state and retrying once: %v", scriptName, err)
+		cleanDaemonStateDir()
+		e.initialized = false
+		e.tabs = make(map[string]*siteTab)
+		if initErr := e.initializeLocked(); initErr != nil {
+			return nil, fmt.Errorf("daemon recovery failed: %w (original: %v)", initErr, err)
+		}
+		return e.runEval(fullScript, scriptName)
+	}
+	return result, err
+}
+
+// runEval executes a JS string in the current tab via browser-act eval --stdin.
+// It sets PYTHONUTF8=1 and PYTHONIOENCODING=utf-8 on the child process to force
+// UTF-8 I/O even when spawned without a console (CREATE_NO_WINDOW). Without
+// these variables, Python on a zh-CN Windows system defaults to GBK/cp936 for
+// pipe I/O, misinterpreting multi-byte UTF-8 sequences in the script as
+// surrogate code points, which crashes the daemon.
+func (e *BrowserActEngine) runEval(fullScript, scriptName string) (interface{}, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, e.cmdPath, "--format", "json", "--session", e.session, "eval", "--stdin")
 	hideWindow(cmd)
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 	cmd.Stdin = strings.NewReader(fullScript)
 
 	out, err := cmd.Output()
@@ -822,7 +852,6 @@ func (e *BrowserActEngine) evalScript(siteID, scriptName string, payload map[str
 		return nil, fmt.Errorf("eval returned no result field: %v", result)
 	}
 
-	// If result is a string that looks like JSON, parse it
 	if resultStr, ok := evalResult.(string); ok {
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(resultStr), &parsed); err == nil {
@@ -830,6 +859,18 @@ func (e *BrowserActEngine) evalScript(siteID, scriptName string, payload map[str
 		}
 	}
 	return evalResult, nil
+}
+
+// isDaemonUnreachable reports whether an eval error indicates the browser-act
+// daemon crashed or became unreachable, warranting a daemon restart.
+func isDaemonUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "daemon is not reachable") ||
+		strings.Contains(msg, "DAEMON_UNAVAILABLE") ||
+		strings.Contains(msg, "surrogates not allowed")
 }
 
 // sanitizeString removes surrogate characters that Python's UTF-8 encoder cannot handle.

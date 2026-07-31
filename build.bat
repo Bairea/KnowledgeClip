@@ -1,5 +1,9 @@
 @echo off
 echo Building KnowledgeClip...
+echo.
+
+:: 清理旧产物（防止混淆）
+if exist bin\server.exe del bin\server.exe
 
 :: Build frontend
 cd web
@@ -12,6 +16,7 @@ cd ..
 :: -H=windowsgui: build as Windows GUI app (no console window)
 go build -ldflags "-s -w -H=windowsgui" -o bin\KnowledgeClip.exe ./cmd/server/
 
+echo.
 echo Build complete: bin\KnowledgeClip.exe
 echo.
 echo Usage:

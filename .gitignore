@@ -3,6 +3,11 @@ web/node_modules
 
 # Build outputs
 web/dist
+# Frontend build artifacts embedded into the Go binary (placeholder index.html stays tracked)
+internal/api/static/assets/
+
+# Runtime config (regenerated from embedded defaults on first run)
+configs/sites.yaml
 
 # Browser data
 .browser-data/
@@ -18,6 +23,8 @@ data.db-wal
 # Build binary
 bin/
 dist/
+test-deploy/
+test-deploy-gui/
 
 # OS
 Thumbs.db

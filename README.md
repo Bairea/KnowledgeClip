@@ -25,21 +25,18 @@
 ## 快速开始
 
 ```bash
-# 1. 安装前端依赖并构建（产物会输出到 internal/api/static/）
-cd web
-npm install
-npm run build
-cd ..
+# 1. 安装前端依赖
+cd web && npm install && cd ..
 
-# 2. 编译后端
-make build
+# 2. 一键构建（前端 + 后端，Windows GUI 单二进制）
+build.bat
+# 或等价命令：make build
+# 产物：bin/KnowledgeClip.exe
 
-# 3. 启动
-make run
-# 或开发模式：make dev
+# 3. 启动（开发模式）
+make dev            # go run，默认监听 :8080
+# 生产产物：双击 bin/KnowledgeClip.exe 后访问 http://localhost:8080
 ```
-
-启动后访问 `http://localhost:8080`，浏览器引擎会自动下载 Chromium（首次约 200MB，耐心等待）。
 
 仅前端开发（前后端联调）：
 

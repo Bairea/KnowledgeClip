@@ -6,13 +6,32 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 )
 
 //go:embed all:*
 var embeddedScripts embed.FS
 
-// ExtractTo extracts embedded scripts to a temp directory and returns the path.
+var (
+	extractOnce sync.Once
+	extractDir  string
+	extractErr  error
+)
+
+// ExtractTo extracts the embedded JS snippets to a temp directory and returns
+// the path. Extraction runs only once per process; later calls reuse the cache.
+// Note: go:embed excludes files whose names start with "." or "_", so the
+// shared lib is named lib.js (not _lib.js) to be embeddable.
 func ExtractTo() (string, error) {
+	extractOnce.Do(func() {
+		extractDir, extractErr = extractLocked()
+	})
+	return extractDir, extractErr
+}
+
+// extractLocked performs the actual extraction.
+func extractLocked() (string, error) {
 	tempDir, err := os.MkdirTemp("", "kc-scripts-*")
 	if err != nil {
 		return "", err
@@ -22,23 +41,23 @@ func ExtractTo() (string, error) {
 		if err != nil {
 			return err
 		}
-
-		// Skip the embed.go file itself and other non-JS files
 		if d.IsDir() {
-			return os.MkdirAll(filepath.Join(tempDir, path), 0755)
+			return nil
 		}
-
+		// Only site JS snippets are needed at runtime. Skip embed.go itself,
+		// setup scripts, and docs.
+		if !strings.HasSuffix(path, ".js") {
+			return nil
+		}
 		data, err := embeddedScripts.ReadFile(path)
 		if err != nil {
 			return err
 		}
-
 		destPath := filepath.Join(tempDir, path)
 		destDir := filepath.Dir(destPath)
 		if err := os.MkdirAll(destDir, 0755); err != nil {
 			return err
 		}
-
 		return os.WriteFile(destPath, data, 0644)
 	})
 

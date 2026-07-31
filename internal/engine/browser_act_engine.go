@@ -29,18 +29,18 @@ type BrowserActEngine struct {
 	browserID   string
 	tabs        map[string]*siteTab // siteID -> tab info
 	activeTab   string              // tabID of the currently active tab (avoids redundant switches)
-	libScript   string              // cached _lib.js content (shared utilities)
+	libScript   string              // cached lib.js content (shared utilities)
 	libLoaded   bool
 }
 
-// getLibScript returns the cached content of _lib.js (shared utility functions).
+// getLibScript returns the cached content of lib.js (shared utility functions).
 // Called under e.mu (via evalOnTab -> evalScript), so no extra sync needed.
 func (e *BrowserActEngine) getLibScript() string {
 	if e.libLoaded {
 		return e.libScript
 	}
 	e.libLoaded = true
-	libPath := filepath.Join(e.scriptsDir, "_lib.js")
+	libPath := filepath.Join(e.scriptsDir, "lib.js")
 	if data, err := os.ReadFile(libPath); err == nil {
 		e.libScript = string(data)
 		log.Printf("[browser-act] loaded shared lib: %s (%d bytes)", libPath, len(e.libScript))
@@ -314,8 +314,17 @@ func (e *BrowserActEngine) openOrReuseTab(url string) (string, error) {
 	// No matching tab. If there is no active session (listTabs failed) or no tabs
 	// at all, start the session with `browser open` — this launches Chrome and
 	// creates the session. Otherwise open a new tab via navigate --new-tab.
+	//
+	// Default to headless (no --headed): headed Chrome is raised to the desktop
+	// foreground on every `tab switch` (Target.activateTarget), which steals
+	// focus from the user's other apps. Set BROWSER_ACT_HEADED=1 to force a
+	// visible window (e.g. for login or captcha steps).
 	if listErr != nil || len(tabs) == 0 {
-		if _, err := e.runCommand("--session", e.session, "browser", "open", e.browserID, url, "--headed"); err != nil {
+		openArgs := []string{"--session", e.session, "browser", "open", e.browserID, url}
+		if os.Getenv("BROWSER_ACT_HEADED") == "1" {
+			openArgs = append(openArgs, "--headed")
+		}
+		if _, err := e.runCommand(openArgs...); err != nil {
 			return "", fmt.Errorf("browser open (start session): %w", err)
 		}
 	} else {

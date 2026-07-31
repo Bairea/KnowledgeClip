@@ -9,17 +9,17 @@
 ## 构建与运行
 
 ```bash
-# 前端
-cd web && npm run build   # 输出到 internal/api/static/
-
-# 后端
-go build -o bin/server.exe ./cmd/server
+# 一键构建（前端 + 后端，产出 Windows GUI 单二进制 bin/KnowledgeClip.exe）
+build.bat          # Windows 推荐
+# 或
+make build         # 等价
 
 # 运行
-go run ./cmd/server       # 默认监听 :8080
+make dev           # go run ./cmd/server，默认监听 :8080
+# 生产产物：双击 bin/KnowledgeClip.exe
 ```
 
-**构建顺序**：先 `npm run build`，再 `go build`。`internal/api/static.go` 用 `//go:embed` 内嵌前端产物，go build 时只会 embed 当时目录里的文件。
+**构建顺序**：先 `npm run build`（输出到 `internal/api/static/`），再 `go build`。`internal/api/static.go` 用 `//go:embed` 内嵌该目录；`internal/api/static/assets/` 是前端构建产物、不入 git，仓库内保留自包含的占位 `index.html`，保证未构建前端时 `go build` 依然可编译（页面提示"前端尚未构建"）。
 
 ## 架构
 
@@ -52,6 +52,12 @@ cmd/server/main.go
 - **端口**：后端 `:8080`；Vite dev 代理 `/api` 和 `/ws` 到 `http://localhost:8080`。
 
 ## 最近修复
+
+### 2026-07-31 browser-act 默认无头模式（不再弹窗抢焦点）
+
+根因：browser-act 的 `tab switch` 会调用 CDP `Target.activateTarget`，headed Chrome 借此把窗口还原并置前；引擎每次操作（发送/轮询/提取）前都要切换站点 tab，导致浏览器反复弹到桌面最前。
+
+修复：`browser_act_engine.go` 的 `openOrReuseTab` 默认不再传 `--headed`（Chrome 以 `--headless` 后台运行，不显示窗口、不抢焦点）；设置环境变量 `BROWSER_ACT_HEADED=1` 可强制有头（登录、验证码等场景）。已实测无头模式下 Kimi/DeepSeek/GLM/豆包均正常（复用现有登录态）。
 
 ### 2026-07-31 修复 Kimi 回答内容缺失
 

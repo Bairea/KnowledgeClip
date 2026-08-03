@@ -36,7 +36,7 @@ cmd/server/main.go
 ### 后端 (`internal/`)
 
 - `api/`：按职责拆文件。`chat.go` 创建 session 后立即返回 `session_id`，后台 goroutine 并发发请求，完成时 WebSocket 广播。
-- `engine/`：三层降级（rod → playwright-go → ts-playwright 占位）。`rod_engine.go` 是核心实现，含 cookie 持久化、Slate/Lexical 编辑器输入、HTML 转 Markdown。
+- `engine/`：三层降级（rod -> browser-act -> playwright-go）。`rod_engine.go` 是核心实现，含 cookie 持久化、Slate/Lexical 编辑器输入、HTML 转 Markdown。browser-act 作为显式 opt-in：在 sites.yaml 把 `engine.primary` 设为 `browser-act`（或经站点配置弹窗选择）即可让该站点锁定使用 browser-act 引擎，不回退到 rod。详见 [ADR-0001](docs/adr/0001-engine-priority-rod-first.md)。
 - `storage/`：仓库函数按表分文件。`Enabled`/`Kept` 在 DB 中是 INTEGER，model 中是 bool。
 
 ### 前端 (`web/src/`)
@@ -88,3 +88,18 @@ cmd/server/main.go
 修复：`isInThinking` 添加 GLM 思考类名；`htmlToMd` 树遍历时跳过思考子树；早期提取增加思考内容守卫。
 
 详细修复记录见 git history。
+
+## 变更记录
+
+### 2026-08-03 引擎优先级改为 rod 优先，browser-act 作为显式 opt-in
+
+背景：browser-act 每次操作需拉起外部 CLI 进程，多站点并发时延迟明显；rod 直接通过 CDP 进程内驱动浏览器，速度更快且已具备核心能力。
+
+变更：
+
+- `internal/engine/manager.go` 的 `getEngines()` 注册顺序改为 `rod -> browser-act -> playwright-go`（原为 browser-act 优先）。
+- `configs/sites.yaml` 中 qwen/kimi/deepseek/minimax/glm/doubao 的 `engine.primary` 从 `browser-act` 翻转为 `cdp`，走 rod 优先降级链；gemini 保持 `cdp`。
+- `web/src/components/SiteConfigModal.tsx` 引擎下拉框新增 `browser-act` 选项。
+- 新建 [ADR-0001](docs/adr/0001-engine-priority-rod-first.md) 记录决策。
+
+browser-act 仍可用：在 sites.yaml 把某站点的 `engine.primary` 设为 `browser-act`（或经站点配置弹窗选择 browser-act），即可让该站点锁定使用 browser-act 引擎。详见 ADR。

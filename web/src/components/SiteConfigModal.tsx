@@ -202,6 +202,7 @@ export default function SiteConfigModal({ isOpen, editingSite, onClose, onSave }
                   className="w-full border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-mono text-[12px] text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-soft)]"
                 >
                   <option value="cdp">cdp</option>
+                  <option value="browser-act">browser-act</option>
                   <option value="playwright">playwright</option>
                 </select>
               </div>

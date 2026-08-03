@@ -49,7 +49,11 @@ func NewManager(db *storage.DB) *Manager {
 func getEngines(db *storage.DB) []BrowserEngine {
 	var engines []BrowserEngine
 
-	// Primary: browser-act engine (requires browser-act CLI installed)
+	// Primary: rod engine (fastest, supports cookie persistence)
+	re := NewRodEngine(db)
+	engines = append(engines, re)
+
+	// Fallback 1: browser-act engine (requires browser-act CLI installed)
 	scriptsDir := getScriptsDir()
 	baEngine, err := NewBrowserActEngine(scriptsDir)
 	if err != nil {
@@ -59,9 +63,7 @@ func getEngines(db *storage.DB) []BrowserEngine {
 		engines = append(engines, baEngine)
 	}
 
-	re := NewRodEngine(db)
-	engines = append(engines, re)
-
+	// Fallback 2: playwright-go engine
 	pwe, err := NewPlaywrightGoEngine()
 	if err != nil {
 		log.Printf("engine init: playwright-go unavailable: %v", err)

@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"chat-aggregator/internal/models"
@@ -222,29 +221,9 @@ func cleanDaemonStateDir() {
 	}
 }
 
-// processAlive reports whether a process with the given pid is currently running.
-// On Windows it uses OpenProcess (the reliable kernel-level probe); on Unix it
-// uses signal 0.
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		// OpenProcess returns ERROR_INVALID_PARAMETER (87) for a dead pid.
-		// PROCESS_QUERY_INFORMATION (0x400) is sufficient to probe existence.
-		handle, err := syscall.OpenProcess(syscall.PROCESS_QUERY_INFORMATION, false, uint32(pid))
-		if err != nil {
-			return false
-		}
-		syscall.CloseHandle(handle)
-		return true
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return p.Signal(syscall.Signal(0)) == nil
-}
+// processAlive reports whether a process with the given pid is currently
+// running. Implementation is platform-specific: Windows uses OpenProcess
+// (process_alive_windows.go), Unix uses signal 0 (process_alive_unix.go).
 
 // translateBrowserActErr converts low-level exec errors into actionable,
 // human-readable messages so users see guidance instead of hex exit codes.

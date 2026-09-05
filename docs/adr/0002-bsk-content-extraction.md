@@ -1,7 +1,7 @@
-# ADR-0002: bsk（browser-skill CLI）直接完成内容摘取 —— 实验结论
+# ADR-0002: bsk（browser-skill CLI）作为可选扩展引擎完成内容摘取
 
-- 状态：实验验证（分支 `experiment/bsk-no-llm-extraction`，待项目维护者决定是否采纳）
-- 日期：2026-09-05
+- 状态：已采纳（可选扩展引擎；不打包、不进默认引擎链）
+- 日期：2026-09-05（实验）→ 2026-09-05（集成验证完成）
 - 决策者：项目维护者
 
 ## 背景
@@ -37,35 +37,69 @@ PoC 位于 `scripts/bsk/`，仅用 5 类 bsk 命令：
 管线内零模型调用：bash 编排 + bsk CLI + 页面内 JS。站点侧的回答由站点自己的 LLM
 生成（这是业务本身，不在本 ADR 的"无 LLM 管线"范围内）。
 
-## 决策（实验结论）
+## 决策（已采纳）
 
-1. **可行，且提取逻辑可直接复用**：现有 `<site>/extract_answer.js` 与 `lib.js` 不需要
-   改动，embed 进 `bsk evaluate` 表达式即跑通（Qwen 已验证）。`evaluate --tab-id`
-   定向执行，**不切换 active tab**，比 browser-act 的单 active-tab 模型更适合并发。
+1. **集成方式**：新增 `internal/engine/bsk_engine.go`（`BskEngine`），作为**可选扩展引擎**
+   注册进 `manager.getEngines()`，但**绝不进入默认回退链**（通用 fallback 循环显式跳过
+   bsk，`SendMessage`/`StartNewChat` 对 `engine_type=bsk` 的站点做独占路由），也不参与
+   打包（脚本经 `getScriptsDir()` 从磁盘读取，与 browser-act 共享同一份
+   `scripts/browser-act/<site>/*.js`）。前端站点配置弹窗新增 `bsk` 引擎选项。
 
-2. **不作为打包 App 的默认引擎**：bsk 依赖用户机器上安装 Chromium 并加载
-   browser-skill 扩展、扩展在线连接。对"双击 exe 即可用"的桌面分发（Windows GUI
-   单二进制）而言这是硬依赖，与 rod（自带 Chromium）和 browser-act（自动拉起 Chrome）
-   的零配置体验冲突。适用于**本机工具链场景**（如本仓库的脚本化抓取/验证），不适用于
-   端用户分发。
+2. **会话模型**：引擎生命周期一个 bsk session（`--no-focus`），每站点一个 agent tab；
+   所有求值经 `bsk evaluate --tab-id <id>` **定向执行，不切换 active tab**，天然适合
+   多站点并发（并发轮询仍用 mutex 串行化，保持确定性）。
 
-3. **保留为独立工具/可选集成**：本次分支交付 `scripts/bsk/`（脚本 + 提取样本 + 本
-   ADR）。是否进一步集成 engine（`internal/engine/bsk_engine.go`，走 manager 显式
-   opt-in，与 browser-act 同级）由维护者决定。
+3. **健壮性**（实测发现的两个环境问题，已修复）：
+   - 扩展的 WebSocket 会周期性断开（实测 22:58 与 23:10 两次 "Connection reset"），
+     daemon 自动重连但**活动 session 随之丢失**。引擎对任何 session/tab 级错误
+     （含 `exit status 1`）触发 `sessionReset` + 重建会话 + 重试一次。
+   - 未登录站点会把页面跳去登录域名（实测 minimax → account.minimaxi.com）。轮询
+     检测到页面离开站点 host 立即失败并提示 "login required"，把 3 分钟静默等待变成
+     秒级失败。
+
+4. **站点脚本修复**：`doubao` 的 detect/send 脚本原本只认 `<textarea>`，而当前豆包
+   页面是 tiptap/ProseMirror 编辑器（`div.tiptap.ProseMirror[contenteditable]`，
+   `ready` 永远为 false）。已更新 detect_input.js（textarea + contenteditable 双支持）
+   与 send_prompt.js（ProseMirror view dispatch → execCommand → textContent 三级
+   注入 + 延迟点发送按钮）。该修复对 browser-act 引擎同样生效。
+
+## 六站实测矩阵（2026-09-05，`BSK_LIVE_TEST=1 go test -run TestBskLiveSixSites`）
+
+| 站点 | 结果 | 耗时 | 说明 |
+|------|------|------|------|
+| qwen | ✅ | ~13.5s | Slate 编辑器注入；标题/代码块/表格保真 |
+| kimi | ✅ | ~15.8s | |
+| deepseek | ✅ | ~11.3s | |
+| minimax | ⛔ 登录墙 | 4s 快速失败 | 页面重定向 account.minimaxi.com 登录页；登录一次后即可走通（引擎代码路径已跑通至发送） |
+| glm | ✅ | ~25.4s | 游客模式可聊；URL 变化验证发送成功 |
+| doubao | ✅ | ~13.9s | tiptap 编辑器修复后通过 |
+
+测试提示词为结构化 Markdown 请求（自我介绍 + Python 代码块 + 2×2 表格），每次抽取
+对标题、代码块、表格的保真均验证。
+
+## 何时选择 bsk
+
+- 本机有 browser-skill 扩展在线（`bsk doctor` 可诊断），且希望复用用户真实浏览器
+  登录态、零 cookie 持久化代码的脚本化摘取场景；
+- 站点选择器失效、rod/browser-act 均失败时的替补手段（把站点 `engine.primary`
+  改为 `bsk` 即锁定使用）；
+- 多站点并发时 `--tab-id` 定向免切换的优势场景。
 
 ## 后果
 
-- 正面：一次实验即证明 bsk 可独立完成"发送→等待→提取"全流程，无 LLM、无新提取代码；
-  登录态零成本复用用户真实浏览器；`--tab-id` 免切换并发友好。
-- 负面/风险：扩展与浏览器在线是硬前置（`bsk doctor` 可诊断）；每次调用有子进程 +
-  daemon RPC 开销（0.2~0.5s）；会话生命周期必须显式 `session stop`（本项目引擎已习惯
-  该纪律）。借用用户个人标签页会被用户侧取消（本次实验中实测到一次），读取他人/敏感
-  页面不适于该路径。
-- 缓解：`bsk status/doctor` 前置检查；脚本 trap EXIT 保证 `session stop`。
+- 正面：一次实验即证明 bsk 可独立完成"发送→等待→提取"全流程，无 LLM、无新提取
+  代码（复用 lib.js 与 6 站脚本）；登录态零成本；会话级故障自愈；登录墙秒级报错。
+- 负面/风险：依赖用户真实 Chromium + 扩展在线；扩展 WebSocket 周期性断开会丢会话
+  （已自愈但会中断进行中的轮询 1-2 次）；每次调用有子进程 + daemon RPC 开销
+  （0.2~0.5s）；会话生命周期必须显式 `session stop`（引擎 Close 保证）。
+- 缓解：`bsk status` 前置检查 + 会话级错误恢复；`trap`/`Close` 保证 `session stop`。
 
 ## 参考
 
+- 引擎：`internal/engine/bsk_engine.go`、live 测试 `internal/engine/bsk_engine_test.go`
+- 编排：`manager.go`（注册 + 独占路由 + fallback 排除）、`SiteConfigModal.tsx`（选项）
 - PoC：`scripts/bsk/bsk_extract.sh`、`scripts/bsk/dom_to_md.js`、`scripts/bsk/README.md`
 - 样本：`scripts/bsk/out/github-readme.md`、`scripts/bsk/out/qwen-answer.md`
-- 复用代码：`scripts/browser-act/lib.js`、`scripts/browser-act/qwen/*.js`
+- 复用代码：`scripts/browser-act/lib.js`、`scripts/browser-act/<site>/*.js`
+  （doubao detect/send 已适配 tiptap 编辑器）
 - 相关 ADR：[ADR-0001](0001-engine-priority-rod-first.md)（rod 优先、browser-act opt-in）

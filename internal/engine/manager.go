@@ -63,6 +63,16 @@ func getEngines(db *storage.DB) []BrowserEngine {
 		engines = append(engines, baEngine)
 	}
 
+	// Optional extension: bsk engine (browser-skill CLI, drives the user's
+	// real Chromium). Never packaged, never part of the default fallback
+	// chain — only sites explicitly configured with engine=bsk use it.
+	bskEng, err := NewBskEngine(getScriptsDir())
+	if err != nil {
+		log.Printf("engine init: bsk unavailable: %v", err)
+	} else {
+		engines = append(engines, bskEng)
+	}
+
 	// Fallback 2: playwright-go engine
 	pwe, err := NewPlaywrightGoEngine()
 	if err != nil {
@@ -129,8 +139,28 @@ func (m *Manager) SendMessage(ctx context.Context, site models.Site, prompt stri
 		return "", errors.New("browser-act engine not available")
 	}
 
+	// If site uses bsk, only try the bsk engine (optional extension, never
+	// part of the fallback chain).
+	if site.EngineType == "bsk" {
+		for _, eng := range m.engines {
+			if eng.Name() == "bsk" {
+				result, err := eng.SendMessage(ctx, site, prompt)
+				if err == nil {
+					return result, nil
+				}
+				return "", fmt.Errorf("bsk: %w", err)
+			}
+		}
+		return "", errors.New("bsk engine not available")
+	}
+
 	var errs []error
 	for _, eng := range m.engines {
+		// bsk is an optional extension: never tried as a fallback for
+		// sites that are not explicitly configured to use it.
+		if eng.Name() == "bsk" {
+			continue
+		}
 		result, err := eng.SendMessage(ctx, site, prompt)
 		if err == nil {
 			return result, nil
@@ -200,8 +230,12 @@ func (m *Manager) StartNewChat(sites []models.Site) {
 		go func(site models.Site) {
 			defer wg.Done()
 			for _, eng := range m.engines {
-				// Use browser-act for sites configured with it, otherwise use any NewChatStarter
+				// Use browser-act/bsk for sites configured with them, otherwise
+				// use any NewChatStarter.
 				if site.EngineType == "browser-act" && eng.Name() != "browser-act" {
+					continue
+				}
+				if site.EngineType == "bsk" && eng.Name() != "bsk" {
 					continue
 				}
 				if ncs, ok := eng.(NewChatStarter); ok {

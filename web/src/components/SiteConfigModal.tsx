@@ -203,6 +203,7 @@ export default function SiteConfigModal({ isOpen, editingSite, onClose, onSave }
                 >
                   <option value="cdp">cdp</option>
                   <option value="browser-act">browser-act</option>
+                  <option value="bsk">bsk</option>
                   <option value="playwright">playwright</option>
                 </select>
               </div>

@@ -72,7 +72,7 @@ func main() {
 	manager := engine.NewManager(db)
 
 	// 7. Create server
-	server := api.NewServer(db, manager)
+	server := api.NewServer(db, manager, configPath)
 
 	// 8. Start server in goroutine
 	serverReady := make(chan int, 1)

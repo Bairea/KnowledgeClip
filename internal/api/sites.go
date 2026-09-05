@@ -11,8 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const sitesConfigPath = "configs/sites.yaml"
-
 type UpdateSelectedRequest struct {
 	Selected bool `json:"selected"`
 }
@@ -210,7 +208,7 @@ func (s *Server) syncConfigToYAML() error {
 		return err
 	}
 
-	cfg, err := config.Load(sitesConfigPath)
+	cfg, err := config.Load(s.configPath)
 	if err != nil {
 		cfg = &config.Config{}
 	}
@@ -235,5 +233,5 @@ func (s *Server) syncConfigToYAML() error {
 		})
 	}
 
-	return config.Save(sitesConfigPath, cfg)
+	return config.Save(s.configPath, cfg)
 }

@@ -14,20 +14,24 @@ import (
 )
 
 type Server struct {
-	router  *gin.Engine
-	db      *storage.DB
-	hub     *Hub
-	manager *engine.Manager
-	server  *http.Server
-	port    int
+	router     *gin.Engine
+	db         *storage.DB
+	hub        *Hub
+	manager    *engine.Manager
+	configPath string
+	server     *http.Server
+	port       int
 }
 
-// NewServer 创建服务器实例
-func NewServer(db *storage.DB, manager *engine.Manager) *Server {
+// NewServer 创建服务器实例。configPath 是 sites.yaml 的写入路径，由启动方以
+// baseDir（可执行文件所在目录）解析后传入 —— 与 ensureConfig 使用同一路径。
+// 不能在此处用相对路径：进程 CWD 与可执行文件目录在 dev（go run）下不一致，
+// 会导致站点写回配置时 500（no such file or directory）。
+func NewServer(db *storage.DB, manager *engine.Manager, configPath string) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 
-	s := &Server{router: r, db: db, hub: NewHub(), manager: manager}
+	s := &Server{router: r, db: db, hub: NewHub(), manager: manager, configPath: configPath}
 	s.setupRoutes()
 	setupStatic(r)
 

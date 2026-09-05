@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -54,6 +55,15 @@ func Save(path string, cfg *Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	// Ensure the parent directory exists: configs/ may be absent when the app
+	// runs from a fresh checkout, and losing a site edit to a missing dir
+	// (500) is worse than creating it.
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create config dir: %w", err)
+		}
 	}
 
 	if err := os.WriteFile(path, data, 0644); err != nil {

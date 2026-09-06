@@ -1,7 +1,9 @@
 # ADR-0002: bsk（browser-skill CLI）作为可选扩展引擎完成内容摘取
 
-- 状态：已采纳（可选扩展引擎；不打包、不进默认引擎链）
-- 日期：2026-09-05（实验）→ 2026-09-05（集成验证完成）
+- 状态：已采纳（可选扩展引擎；不打包、不进默认引擎链）。2026-09-06 起传输层
+  重写为 daemon IPC 直连（[迭代 1-2](../iterations/)），CLI 子进程模式废弃；
+  2026-09-06 起国内六站默认引擎从 browser-act 切换为 bsk
+- 日期：2026-09-05（实验）→ 2026-09-05（集成验证完成）→ 2026-09-06（IPC 重构 + 默认化）
 - 决策者：项目维护者
 
 ## 背景
@@ -103,3 +105,18 @@ PoC 位于 `scripts/bsk/`，仅用 5 类 bsk 命令：
 - 复用代码：`scripts/browser-act/lib.js`、`scripts/browser-act/<site>/*.js`
   （doubao detect/send 已适配 tiptap 编辑器）
 - 相关 ADR：[ADR-0001](0001-engine-priority-rod-first.md)（rod 优先、browser-act opt-in）
+## 2026-09-06 增补：传输层重写（IPC 直连）与发送自愈链
+
+原方案的"每次调用拉起 bsk CLI 子进程 + 引擎级全局 mutex"已被替换：
+
+1. **传输**：`internal/engine/bskclient` 直连 `~/.bsk/run/daemon.sock` 的
+   ndjson JSON-RPC（协议 1.1）。单次 evaluate 0.7ms（vs CLI ~10ms），daemon
+   原生多路复用，引擎级互斥锁已删除，站点真正并发轮询。CLI 仅用于 daemon 生命周期。
+2. **自愈**：会话级/标签级 `not_found` 透明重建；发送失败三级抢救
+   （编辑器留文→立即重发；已消费无内容→reload；仍无→重发）+ 超时提取兜底。
+   动机与实测数据见 [docs/iterations/](../iterations/)。
+3. **默认化**：国内六站 `engine.primary` 从 browser-act 切到 bsk（gemini 仍 cdp）。
+   browser-act 引擎保留，仍可显式 opt-in。
+
+风险更新：daemon IPC 是非公开协议（从二进制逆向 + 实测固化），bsk 升级可能
+破坏；bskclient 启动时核对 `protocol_version`（当前 1.1），不匹配时报错提示升级。

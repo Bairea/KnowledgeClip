@@ -35,8 +35,8 @@ cmd/server/main.go
 
 ### 后端 (`internal/`)
 
-- `api/`：按职责拆文件。`chat.go` 创建 session 后立即返回 `session_id`，后台 goroutine 并发发请求，完成时 WebSocket 广播。
-- `engine/`：三层降级（rod -> browser-act -> playwright-go）。`rod_engine.go` 是核心实现，含 cookie 持久化、Slate/Lexical 编辑器输入、HTML 转 Markdown。browser-act 作为显式 opt-in：在 sites.yaml 把 `engine.primary` 设为 `browser-act`（或经站点配置弹窗选择）即可让该站点锁定使用 browser-act 引擎，不回退到 rod。详见 [ADR-0001](docs/adr/0001-engine-priority-rod-first.md)。
+- `api/`：按职责拆文件。`chat.go` 创建 session 后立即返回 `session_id`，后台 goroutine 并发发请求，完成时 WebSocket 广播；阶段进度经 context 回调以 `progress` 事件推送（见 `internal/engine/progress.go`）。
+- `engine/`：三层降级（rod -> browser-act -> playwright-go）+ 可选扩展引擎 bsk。`rod_engine.go` 是核心实现，含 cookie 持久化、Slate/Lexical 编辑器输入、HTML 转 Markdown。browser-act 作为显式 opt-in。**bsk 引擎（`bsk_engine.go`）经 `bskclient` 直连 bsk daemon 的 Unix socket（ndjson JSON-RPC），站点并发轮询、无引擎级锁，带会话自愈与三级发送抢救链**；国内六站默认 `engine.primary: bsk`。详见 [ADR-0001](docs/adr/0001-engine-priority-rod-first.md)、[ADR-0002](docs/adr/0002-bsk-content-extraction.md)、[docs/iterations/](docs/iterations/README.md)。
 - `storage/`：仓库函数按表分文件。`Enabled`/`Kept` 在 DB 中是 INTEGER，model 中是 bool。
 
 ### 前端 (`web/src/`)
@@ -90,6 +90,10 @@ cmd/server/main.go
 详细修复记录见 git history。
 
 ## 变更记录
+
+### 2026-09-06 bsk 引擎重写为 daemon IPC 直连，国内六站默认引擎切换为 bsk
+
+详见 [ADR-0002 增补](docs/adr/0002-bsk-content-extraction.md) 与 [docs/iterations/](docs/iterations/README.md)：bskclient 单连接多路复用（0.7ms/evaluate）、真并发轮询、会话自愈、三级发送抢救链、进度事件；CLI 子进程模式废弃。
 
 ### 2026-08-03 引擎优先级改为 rod 优先，browser-act 作为显式 opt-in
 

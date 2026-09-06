@@ -9,7 +9,7 @@ sites:
       enabled: true
       selected: true
       engine:
-        primary: browser-act
+        primary: bsk
         selectors:
             answer: '[class*=answer-common-card]'
             content_strategy: clipboard
@@ -25,7 +25,7 @@ sites:
       enabled: true
       selected: true
       engine:
-        primary: browser-act
+        primary: bsk
         selectors:
             answer: '[class*=markdown]'
             content_strategy: clipboard
@@ -41,7 +41,7 @@ sites:
       enabled: true
       selected: true
       engine:
-        primary: browser-act
+        primary: bsk
         selectors:
             answer: '.ds-assistant-message-main-content'
             content_strategy: clipboard
@@ -73,7 +73,7 @@ sites:
       enabled: true
       selected: true
       engine:
-        primary: browser-act
+        primary: bsk
         selectors:
             answer: '[class*=message-animate-in]:not(.justify-end)'
             content_strategy: clipboard
@@ -89,7 +89,7 @@ sites:
       enabled: true
       selected: true
       engine:
-        primary: browser-act
+        primary: bsk
         selectors:
             answer: '.answer-content'
             content_strategy: html2md
@@ -105,7 +105,7 @@ sites:
       enabled: true
       selected: true
       engine:
-        primary: browser-act
+        primary: bsk
         selectors:
             answer: '.md-box-root'
             content_strategy: clipboard

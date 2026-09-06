@@ -5,10 +5,11 @@ interface ChatGridProps {
   messages: Message[]
   sites: Site[]
   onToggleKeep: (id: string) => void
+  onRetry: (message: Message) => void
   columns?: number
 }
 
-export default function ChatGrid({ messages, sites, onToggleKeep, columns = 3 }: ChatGridProps) {
+export default function ChatGrid({ messages, sites, onToggleKeep, onRetry, columns = 3 }: ChatGridProps) {
   const siteMap = new Map(sites.map((s) => [s.id, s.name]))
 
   const gridStyle = {
@@ -26,6 +27,7 @@ export default function ChatGrid({ messages, sites, onToggleKeep, columns = 3 }:
           message={msg}
           siteName={siteMap.get(msg.site_id) || msg.site_id}
           onToggleKeep={onToggleKeep}
+          onRetry={onRetry}
         />
       ))}
     </div>

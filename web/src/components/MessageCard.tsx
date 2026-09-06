@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useReducer } from 'react'
+import { ReactNode, useEffect, useReducer, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -10,6 +10,7 @@ interface MessageCardProps {
   message: Message
   siteName: string
   onToggleKeep: (id: string) => void
+  onRetry?: (message: Message) => void
 }
 
 const STAGE_ORDER = ['input', 'sending', 'generating', 'extracting'] as const
@@ -71,9 +72,20 @@ function extractCodeInfo(children: ReactNode): { language: string; code: string 
   return { language: 'text', code: String(children ?? '') }
 }
 
-export default function MessageCard({ message, siteName, onToggleKeep }: MessageCardProps) {
+export default function MessageCard({ message, siteName, onToggleKeep, onRetry }: MessageCardProps) {
   const stage = message.loading ? message.stage || 'input' : ''
   const tickerSince = message.stageAt ?? (Date.parse(message.created_at) || Date.now())
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard API unavailable (non-secure context); best effort only.
+    }
+  }
   return (
     <article className="relative flex flex-col overflow-hidden border border-[var(--line)] bg-[var(--surface-raised)] transition-colors hover:border-[var(--line-strong)]">
       {message.loading && (
@@ -216,9 +228,29 @@ export default function MessageCard({ message, siteName, onToggleKeep }: Message
         )}
       </div>
       <footer className="flex items-center justify-between border-t border-[var(--line-soft)] bg-[var(--paper-soft)] px-4 py-2">
-        <span className="font-mono tabular text-[10px] uppercase tracking-[0.1em] text-[var(--ink-faint)]">
-          {message.elapsed_ms > 0 ? `${(message.elapsed_ms / 1000).toFixed(1)}s` : ''}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono tabular text-[10px] uppercase tracking-[0.1em] text-[var(--ink-faint)]">
+            {message.elapsed_ms > 0 ? `${(message.elapsed_ms / 1000).toFixed(1)}s` : ''}
+          </span>
+          {!message.loading && message.error && onRetry && (
+            <button
+              type="button"
+              onClick={() => onRetry(message)}
+              className="border border-[var(--danger)] px-2 py-0.5 font-ui text-[11px] font-medium text-[var(--danger)] hover:bg-[var(--danger)] hover:text-[var(--surface-raised)]"
+            >
+              重试
+            </button>
+          )}
+          {!message.loading && !message.error && message.content && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="font-ui text-[11px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)]"
+            >
+              {copied ? '已复制 ✓' : '复制'}
+            </button>
+          )}
+        </div>
         <KeepSwitch
           checked={message.kept}
           onChange={() => onToggleKeep(message.id)}

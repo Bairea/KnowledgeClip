@@ -40,6 +40,7 @@ func NewServer(db *storage.DB, manager *engine.Manager, configPath string) *Serv
 
 func (s *Server) setupRoutes() {
 	s.router.GET("/api/health", s.handleHealth)
+	s.router.GET("/api/engine/status", s.handleEngineStatus)
 	s.router.GET("/api/sites", s.handleGetSites)
 	s.router.POST("/api/sites", s.handleCreateSite)
 	s.router.PUT("/api/sites/:id", s.handleUpdateSite)

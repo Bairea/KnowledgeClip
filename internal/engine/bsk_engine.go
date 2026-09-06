@@ -145,6 +145,27 @@ func NewBskEngineWithClient(client *bskclient.Client, scriptsDir string) *BskEng
 
 func (e *BskEngine) Name() string { return "bsk" }
 
+// Health reports daemon/extension reachability without side effects: it
+// never starts the daemon and never creates a session.
+func (e *BskEngine) Health(timeout time.Duration) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := e.client.Ping(ctx); err != nil {
+		return false, "daemon 未运行（发送时将自动启动，或手动执行 bsk daemon start）"
+	}
+	stCtx, cancel2 := context.WithTimeout(context.Background(), timeout)
+	defer cancel2()
+	st, err := e.client.Status(stCtx)
+	if err != nil {
+		return true, "daemon 可达，状态未知"
+	}
+	if !st.Connected() {
+		return false, "浏览器扩展未连接（打开 Chrome 并启用 browser-skill 扩展）"
+	}
+	b := st.Browsers[0]
+	return true, fmt.Sprintf("%s 已连接（扩展 %s）", b.BrowserName, b.ExtensionVersion)
+}
+
 // Close stops the bsk session and tears down the daemon connection.
 func (e *BskEngine) Close() error {
 	e.mu.Lock()

@@ -1,4 +1,5 @@
 import type { Site } from '../types'
+import type { EngineHealth } from '../hooks/useEngineStatus'
 
 interface SiteSidebarProps {
   sites: Site[]
@@ -6,9 +7,16 @@ interface SiteSidebarProps {
   toggleSite: (id: string) => void
   onEditSite: (site: Site) => void
   width: number
+  engines?: Map<string, EngineHealth>
 }
 
-export default function SiteSidebar({ sites, selectedSites, toggleSite, onEditSite, width }: SiteSidebarProps) {
+// Engine badge colors: healthy engines green, broken ones red, unknown gray.
+function engineDotClass(h?: EngineHealth): string {
+  if (!h) return 'bg-[var(--line-strong)]'
+  return h.available ? 'bg-[var(--success)]' : 'bg-[var(--danger)]'
+}
+
+export default function SiteSidebar({ sites, selectedSites, toggleSite, onEditSite, width, engines }: SiteSidebarProps) {
   return (
     <aside className="flex flex-col border-r border-[var(--line)] bg-[var(--surface)]" style={{ width: `${width}px` }}>
       <div className="flex h-12 items-center gap-2 border-b border-[var(--line)] px-4">
@@ -19,6 +27,7 @@ export default function SiteSidebar({ sites, selectedSites, toggleSite, onEditSi
         {sites.map((site) => {
           const disabled = !site.enabled
           const isChecked = selectedSites.has(site.id)
+          const health = engines?.get(site.engine_type)
           return (
             <div
               key={site.id}
@@ -42,6 +51,10 @@ export default function SiteSidebar({ sites, selectedSites, toggleSite, onEditSi
               >
                 {site.name}
               </button>
+              <span
+                title={`${site.engine_type}${health?.detail ? `：${health.detail}` : ''}`}
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${engineDotClass(health)}`}
+              />
               {disabled && (
                 <span className="bg-[var(--paper-dark)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--ink-muted)]">
                   未配置

@@ -132,6 +132,7 @@ func (s *Server) handleChat(c *gin.Context) {
 				Content:   content,
 				Error:     errStr,
 				ElapsedMs: elapsed,
+				Turn:      req.Turn,
 				Done:      true,
 			})
 		}, onProgress)

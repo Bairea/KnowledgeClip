@@ -118,6 +118,37 @@ var exclusiveEngines = map[string]bool{
 	"bsk":         true,
 }
 
+// EngineHealth is the user-facing availability of one engine slot.
+type EngineHealth struct {
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	Detail    string `json:"detail,omitempty"`
+}
+
+// knownEngineNames lists every engine slot in priority order, including
+// ones whose construction failed (reported as unavailable).
+var knownEngineNames = []string{"rod", "browser-act", "bsk", "playwright-go"}
+
+// Health reports per-engine availability. The bsk slot gets a live
+// daemon/extension probe; the rest reflect construction-time availability.
+func (m *Manager) Health() []EngineHealth {
+	out := make([]EngineHealth, 0, len(knownEngineNames))
+	for _, name := range knownEngineNames {
+		eng := m.engineByName(name)
+		h := EngineHealth{Name: name}
+		if eng == nil {
+			h.Detail = "未安装"
+		} else {
+			h.Available = true
+		}
+		if bsk, ok := eng.(*BskEngine); ok {
+			h.Available, h.Detail = bsk.Health(2 * time.Second)
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
 func (m *Manager) siteLock(siteID string) *sync.Mutex {
 	v, _ := m.locks.LoadOrStore(siteID, &sync.Mutex{})
 	return v.(*sync.Mutex)

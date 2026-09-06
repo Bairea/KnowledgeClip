@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { useSites } from './hooks/useSites'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useEngineStatus } from './hooks/useEngineStatus'
 import SiteSidebar from './components/SiteSidebar'
 import ChatGrid from './components/ChatGrid'
 import InputArea from './components/InputArea'
@@ -32,6 +33,7 @@ interface WSMessage {
   error?: string
   elapsed_ms?: number
   stage?: string
+  turn?: number
   done: boolean
 }
 
@@ -48,6 +50,7 @@ interface TurnInfo {
 
 export default function App() {
   const { sites, selectedSites, toggleSite, fetchSites } = useSites()
+  const { engines } = useEngineStatus()
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
@@ -67,12 +70,11 @@ export default function App() {
     if (msg.type === 'progress' && msg.site_id) {
       const siteId = msg.site_id
       const stage = msg.stage || ''
-      const turn = currentTurnRef.current
+      // Match by site + loading: retry re-runs an older turn, so the turn is
+      // not necessarily the current one. Only one batch/retry is in flight.
       setMessages((prev) =>
         prev.map((m) =>
-          m.loading && m.site_id === siteId && m.turn === turn
-            ? { ...m, stage, stageAt: Date.now() }
-            : m,
+          m.loading && m.site_id === siteId ? { ...m, stage, stageAt: Date.now() } : m,
         ),
       )
     } else if (msg.type === 'message' && msg.site_id) {
@@ -81,7 +83,8 @@ export default function App() {
       const error = msg.error || ''
       const elapsedMs = msg.elapsed_ms || 0
       const messageId = msg.message_id || ''
-      const turn = currentTurnRef.current
+      // Backend echoes the turn (set on retry); fall back to the current one.
+      const turn = msg.turn ?? currentTurnRef.current
 
       setMessages((prev) => {
         const id = `${msg.session_id}-${siteId}-${turn}`
@@ -177,6 +180,54 @@ export default function App() {
       setMessages((prev) => [...prev, ...newMessages])
     },
     [selectedSites, currentSessionId],
+  )
+
+  const handleRetry = useCallback(
+    async (failed: Message) => {
+      if (isLoading || !currentSessionId || failed.loading) return
+      const prompt = turns.find((t) => t.turn === failed.turn)?.prompt
+      if (!prompt) return
+
+      setIsLoading(true)
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === failed.id
+            ? { ...m, loading: true, error: '', content: '', elapsed_ms: 0, stage: 'input', stageAt: Date.now() }
+            : m,
+        ),
+      )
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            site_ids: [failed.site_id],
+            session_id: currentSessionId,
+            turn: failed.turn,
+          }),
+        })
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === failed.id ? { ...m, loading: false, error: errBody.error || '重试失败' } : m,
+            ),
+          )
+          setIsLoading(false)
+        }
+        // Success path: the WS message update clears loading.
+      } catch (err) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === failed.id ? { ...m, loading: false, error: `重试失败: ${err}` } : m,
+          ),
+        )
+        setIsLoading(false)
+      }
+    },
+    [isLoading, currentSessionId, turns],
   )
 
   const handleToggleKeep = useCallback(
@@ -299,7 +350,15 @@ export default function App() {
           throw new Error(`HTTP ${res.status}`)
         }
         const data = await res.json()
-        const loadedMessages: Message[] = data.map((msg: Record<string, unknown>) => ({
+        // Retries append extra rows for the same session+site+turn; keep the
+        // newest one per card id (last occurrence wins).
+        const byId = new Map<string, Record<string, unknown>>()
+        for (const msg of data) {
+          const id = `${msg.session_id}-${msg.site_id}-${msg.turn || 0}`
+          byId.set(id, msg)
+        }
+        const deduped = Array.from(byId.values())
+        const loadedMessages: Message[] = deduped.map((msg: Record<string, unknown>) => ({
           id: `${msg.session_id}-${msg.site_id}-${msg.turn || 0}`,
           message_id: String(msg.id || ''),
           session_id: String(msg.session_id || ''),
@@ -422,6 +481,7 @@ export default function App() {
           toggleSite={toggleSite}
           onEditSite={openEditSite}
           width={sidebarWidth}
+          engines={engines}
         />
         <ResizeHandle
           direction="horizontal"
@@ -480,6 +540,7 @@ export default function App() {
                   messages={messages.filter((m) => m.turn === turn.turn)}
                   sites={sites}
                   onToggleKeep={handleToggleKeep}
+                  onRetry={handleRetry}
                   columns={columnsPerRow}
                 />
               </section>

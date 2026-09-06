@@ -51,6 +51,16 @@ interface TurnInfo {
 export default function App() {
   const { sites, selectedSites, toggleSite, fetchSites } = useSites()
   const { engines } = useEngineStatus()
+  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
+    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+  )
+
+  const toggleTheme = useCallback(() => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    document.documentElement.dataset.theme = next
+    localStorage.setItem('kc-theme', next)
+    setTheme(next)
+  }, [theme])
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
@@ -441,6 +451,14 @@ export default function App() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? '切换到日间模式' : '切换到夜间模式'}
+            className="border border-[var(--line)] bg-[var(--paper-soft)] px-2.5 py-1.5 font-mono text-[12px] text-[var(--ink-soft)] hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
+          >
+            {theme === 'dark' ? '☀ 日间' : '☾ 夜间'}
+          </button>
+          <button
+            type="button"
             onClick={handleNewChat}
             className="border border-[var(--line)] bg-[var(--paper-soft)] px-3 py-1.5 font-ui text-[12px] font-medium text-[var(--ink-soft)] hover:border-[var(--ink-muted)] hover:text-[var(--ink)]"
           >
@@ -522,6 +540,11 @@ export default function App() {
                   <p className="font-display text-[22px] font-semibold leading-tight text-[var(--ink)]">开始新对话</p>
                   <p className="mt-3 font-reading text-[14px] leading-relaxed text-[var(--ink-muted)]">
                     选择左侧站点，在下方输入问题。<br/>支持多轮对话，回答可标记保留后导出。
+                  </p>
+                  <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--ink-faint)]">
+                    {selectedSites.size > 0
+                      ? `将发送到 ${selectedSites.size} 个站点`
+                      : '尚未选择站点 — 在左侧勾选'}
                   </p>
                   <div className="mx-auto mt-4 h-px w-12 bg-[var(--line-strong)]"></div>
                 </div>

@@ -72,6 +72,64 @@ function extractCodeInfo(children: ReactNode): { language: string; code: string 
   return { language: 'text', code: String(children ?? '') }
 }
 
+/** 代码块：深色主题 + 语言标签 + 复制按钮头部。 */
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard API unavailable; best effort only.
+    }
+  }
+  return (
+    <div className="my-3 overflow-hidden border border-[var(--code-border)]" style={{ backgroundColor: 'var(--code-bg)' }}>
+      <div className="flex items-center justify-between border-b border-[var(--code-border)] px-3 py-1.5">
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--code-line)]">{language}</span>
+        <button
+          type="button"
+          onClick={copy}
+          className="font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--code-line)] transition-colors hover:text-[var(--code-ink)]"
+        >
+          {copied ? 'copied ✓' : 'copy'}
+        </button>
+      </div>
+      <SyntaxHighlighter
+        language={language}
+        style={oneDark as any}
+        showLineNumbers
+        startingLineNumber={1}
+        lineNumberStyle={{
+          color: 'var(--code-line)',
+          paddingRight: '1.5em',
+          userSelect: 'none',
+          minWidth: '2.5em',
+          textAlign: 'right',
+        } as any}
+        customStyle={{
+          margin: 0,
+          borderRadius: 0,
+          border: 0,
+          backgroundColor: 'transparent',
+          fontSize: '0.8rem',
+          padding: '0.875rem 1rem',
+        }}
+        codeTagProps={{
+          style: {
+            fontFamily: 'var(--font-mono, "IBM Plex Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace)',
+            fontSize: '0.8rem',
+            color: 'var(--code-ink)',
+          }
+        }}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  )
+}
+
 export default function MessageCard({ message, siteName, onToggleKeep, onRetry }: MessageCardProps) {
   const stage = message.loading ? message.stage || 'input' : ''
   const tickerSince = message.stageAt ?? (Date.parse(message.created_at) || Date.now())
@@ -162,38 +220,7 @@ export default function MessageCard({ message, siteName, onToggleKeep, onRetry }
                 },
                 pre: ({ node: _n, children }) => {
                   const { language, code } = extractCodeInfo(children)
-                  return (
-                    <SyntaxHighlighter
-                      language={language}
-                      style={oneDark as any}
-                      showLineNumbers
-                      startingLineNumber={1}
-                      lineNumberStyle={{
-                        color: 'var(--code-line)',
-                        paddingRight: '1.5em',
-                        userSelect: 'none',
-                        minWidth: '2.5em',
-                        textAlign: 'right',
-                      } as any}
-                      customStyle={{
-                        margin: '0.875rem 0',
-                        borderRadius: 'var(--radius)',
-                        border: '1px solid var(--code-border)',
-                        backgroundColor: 'var(--code-bg)',
-                        fontSize: '0.8rem',
-                        padding: '0.875rem 1rem',
-                      }}
-                      codeTagProps={{
-                        style: {
-                          fontFamily: 'var(--font-mono, "IBM Plex Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace)',
-                          fontSize: '0.8rem',
-                          color: 'var(--code-ink)',
-                        }
-                      }}
-                    >
-                      {code}
-                    </SyntaxHighlighter>
-                  )
+                  return <CodeBlock language={language} code={code} />
                 },
                 a: ({ node: _n, ...props }) => (
                   <a className="text-[var(--accent)] font-medium hover:underline underline-offset-2" target="_blank" rel="noopener noreferrer" {...props} />

@@ -40,6 +40,39 @@
     --code-border: #2a2620;
   }
 
+  /* Night Reading Room — warm charcoal, same petrol family brightened */
+  html[data-theme='dark'] {
+    --paper: #17150f;
+    --paper-soft: #1e1b14;
+    --paper-dark: #29251b;
+    --surface: #14120d;
+    --surface-raised: #1c1913;
+
+    --ink: #ece5d2;
+    --ink-soft: #d8d0ba;
+    --ink-muted: #9a917c;
+    --ink-faint: #6e6654;
+
+    --accent: #5cb3b1;
+    --accent-soft: #1d3f40;
+    --accent-hover: #79c6c4;
+    --accent-ink: #0e1f1f;
+
+    --line: #3a3527;
+    --line-soft: #2a2619;
+    --line-strong: #554e3a;
+
+    --danger: #d98080;
+    --success: #7fbf95;
+
+    --code-bg: #100e0a;
+    --code-ink: #e8e2d0;
+    --code-line: #6e6654;
+    --code-border: #2a2619;
+
+    color-scheme: dark;
+  }
+
   html {
     font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;

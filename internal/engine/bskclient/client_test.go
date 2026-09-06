@@ -212,7 +212,12 @@ func TestReconnectAfterDrop(t *testing.T) {
 
 func TestInflightFailsOnDrop(t *testing.T) {
 	release := make(chan struct{})
+	handlerEntered := make(chan struct{}, 1)
 	d := newFakeDaemon(t, func(_ string, _ json.RawMessage) (any, *RPCError) {
+		select {
+		case handlerEntered <- struct{}{}:
+		default:
+		}
 		<-release
 		return map[string]any{"pong": true}, nil
 	})
@@ -223,17 +228,23 @@ func TestInflightFailsOnDrop(t *testing.T) {
 		errCh <- c.Ping(context.Background())
 	}()
 
-	// Wait until the request reached the daemon, then kill the connection.
-	time.Sleep(100 * time.Millisecond)
+	// Deterministic: drop only after the request actually reached the daemon.
+	select {
+	case <-handlerEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request never reached the fake daemon")
+	}
 	d.dropConnections()
 	close(release)
 
+	// The call must not hang: the transport retry re-dials and succeeds now
+	// that the daemon is answering again.
 	select {
 	case err := <-errCh:
-		if err == nil {
-			t.Fatal("in-flight call should fail when the connection drops")
+		if err != nil {
+			t.Fatalf("in-flight call should recover via retry, got: %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("in-flight call hung after connection drop")
 	}
 }

@@ -109,10 +109,12 @@ func getScriptsDir() string {
 	return filepath.Join(exeDir, "scripts", "browser-act")
 }
 
-// UseBrowserAct returns true if the engine for the given site should use browser-act.
-// This is determined by the site's engine type in config.
-func (m *Manager) UseBrowserAct(site models.Site) bool {
-	return site.EngineType == "browser-act"
+// exclusiveEngines are opt-in extension engines: only sites explicitly
+// configured with that engine type use them, and they never serve as
+// fallbacks for other sites.
+var exclusiveEngines = map[string]bool{
+	"browser-act": true,
+	"bsk":         true,
 }
 
 func (m *Manager) siteLock(siteID string) *sync.Mutex {
@@ -120,45 +122,38 @@ func (m *Manager) siteLock(siteID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
+// engineByName returns the registered engine with the given name, or nil.
+func (m *Manager) engineByName(name string) BrowserEngine {
+	for _, eng := range m.engines {
+		if eng.Name() == name {
+			return eng
+		}
+	}
+	return nil
+}
+
 func (m *Manager) SendMessage(ctx context.Context, site models.Site, prompt string) (string, error) {
 	lock := m.siteLock(site.ID)
 	lock.Lock()
 	defer lock.Unlock()
 
-	// If site uses browser-act, only try browser-act engine
-	if site.EngineType == "browser-act" {
-		for _, eng := range m.engines {
-			if eng.Name() == "browser-act" {
-				result, err := eng.SendMessage(ctx, site, prompt)
-				if err == nil {
-					return result, nil
-				}
-				return "", fmt.Errorf("browser-act: %w", err)
-			}
+	// Exclusive opt-in engines: exactly the configured engine, no fallback.
+	if exclusiveEngines[site.EngineType] {
+		eng := m.engineByName(site.EngineType)
+		if eng == nil {
+			return "", fmt.Errorf("%s engine not available", site.EngineType)
 		}
-		return "", errors.New("browser-act engine not available")
-	}
-
-	// If site uses bsk, only try the bsk engine (optional extension, never
-	// part of the fallback chain).
-	if site.EngineType == "bsk" {
-		for _, eng := range m.engines {
-			if eng.Name() == "bsk" {
-				result, err := eng.SendMessage(ctx, site, prompt)
-				if err == nil {
-					return result, nil
-				}
-				return "", fmt.Errorf("bsk: %w", err)
-			}
+		result, err := eng.SendMessage(ctx, site, prompt)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", eng.Name(), err)
 		}
-		return "", errors.New("bsk engine not available")
+		return result, nil
 	}
 
 	var errs []error
 	for _, eng := range m.engines {
-		// bsk is an optional extension: never tried as a fallback for
-		// sites that are not explicitly configured to use it.
-		if eng.Name() == "bsk" {
+		// Opt-in extension engines are never tried as fallbacks.
+		if exclusiveEngines[eng.Name()] {
 			continue
 		}
 		result, err := eng.SendMessage(ctx, site, prompt)
@@ -172,8 +167,9 @@ func (m *Manager) SendMessage(ctx context.Context, site models.Site, prompt stri
 }
 
 // SendToSites sends a prompt to multiple sites, calling onResult for each site
-// as it completes. Browser-act sites are routed to the batch coordinator to
-// avoid global-lock contention; other-engine sites are sent concurrently.
+// as it completes. Browser-act sites are routed to the batch coordinator
+// (single-active-tab constraint); other-engine sites are sent concurrently —
+// the bsk engine polls its per-site tabs over the daemon socket in parallel.
 func (m *Manager) SendToSites(ctx context.Context, sites []models.Site, prompt string, isNewSession bool, onResult func(site models.Site, content string, err error)) {
 	var wg sync.WaitGroup
 
@@ -229,13 +225,18 @@ func (m *Manager) StartNewChat(sites []models.Site) {
 		wg.Add(1)
 		go func(site models.Site) {
 			defer wg.Done()
-			for _, eng := range m.engines {
-				// Use browser-act/bsk for sites configured with them, otherwise
-				// use any NewChatStarter.
-				if site.EngineType == "browser-act" && eng.Name() != "browser-act" {
-					continue
+			if exclusiveEngines[site.EngineType] {
+				if eng := m.engineByName(site.EngineType); eng != nil {
+					if ncs, ok := eng.(NewChatStarter); ok {
+						if err := ncs.StartNewChat(site); err != nil {
+							log.Printf("[manager] start new chat failed for site %s: %v", site.ID, err)
+						}
+					}
 				}
-				if site.EngineType == "bsk" && eng.Name() != "bsk" {
+				return
+			}
+			for _, eng := range m.engines {
+				if exclusiveEngines[eng.Name()] {
 					continue
 				}
 				if ncs, ok := eng.(NewChatStarter); ok {

@@ -90,6 +90,7 @@ type rpcResponse struct {
 type pendingCall struct {
 	ch   chan rpcResponse
 	self chan struct{} // closed to abandon the call (ctx done)
+	conn net.Conn      // connection the request was written to
 }
 
 type requestFrame struct {
@@ -130,6 +131,12 @@ func New() *Client {
 		cmdPath:  cmdPath,
 		pending:  make(map[string]*pendingCall),
 	}
+}
+
+// NewWithSocket builds a client bound to a specific socket path (tests,
+// alternative installs). cmdPath stays empty: daemon auto-start is disabled.
+func NewWithSocket(sockPath string) *Client {
+	return &Client{sockPath: sockPath, pending: make(map[string]*pendingCall)}
 }
 
 // Status is the parsed `system.status` payload.
@@ -391,12 +398,33 @@ func (c *Client) ensureDaemon(ctx context.Context) error {
 
 // --- transport ---------------------------------------------------------------
 
+// errTransport marks retryable transport-level failures (connection dropped
+// mid-call, write error on a dead socket). Daemon-level RPCError results are
+// authoritative and never retried.
+var errTransport = errors.New("transport")
+
 func (c *Client) call(ctx context.Context, method string, params any, result any) error {
 	paramsRaw, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("marshal %s params: %w", method, err)
 	}
 
+	err = c.attemptCall(ctx, method, paramsRaw, result)
+	// A call that races with a connection drop gets one transparent retry
+	// on a fresh connection. Force-drop first: the readLoop may not have
+	// noticed the EOF yet, and attemptCall must not reuse a dead socket.
+	if err != nil && errors.Is(err, errTransport) && ctx.Err() == nil {
+		c.mu.Lock()
+		if c.conn != nil {
+			c.dropConnLocked(c.conn)
+		}
+		c.mu.Unlock()
+		err = c.attemptCall(ctx, method, paramsRaw, result)
+	}
+	return err
+}
+
+func (c *Client) attemptCall(ctx context.Context, method string, paramsRaw json.RawMessage, result any) error {
 	conn, err := c.getConn()
 	if err != nil {
 		return fmt.Errorf("bsk daemon connect: %w", err)
@@ -419,13 +447,13 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 		return err
 	}
 
-	pending := &pendingCall{ch: make(chan rpcResponse, 1), self: make(chan struct{})}
+	pending := &pendingCall{ch: make(chan rpcResponse, 1), self: make(chan struct{}), conn: conn}
 	c.pending[id] = pending
 	if _, werr := conn.Write(append(full, '\n')); werr != nil {
 		delete(c.pending, id)
 		c.dropConnLocked(conn)
 		c.mu.Unlock()
-		return fmt.Errorf("bsk daemon write (%s): %w", method, werr)
+		return fmt.Errorf("%w: bsk daemon write (%s): %v", errTransport, method, werr)
 	}
 	c.mu.Unlock()
 
@@ -433,7 +461,9 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 	select {
 	case resp = <-pending.ch:
 	case <-pending.self:
-		return fmt.Errorf("bsk %s: call abandoned", method)
+		// readLoop died (connection dropped) while the response was in
+		// flight; the next attempt re-dials.
+		return fmt.Errorf("%w: bsk %s: connection closed mid-call", errTransport, method)
 	case <-ctx.Done():
 		// Deregister so a late response doesn't leak.
 		c.mu.Lock()
@@ -521,12 +551,17 @@ func (c *Client) readLoop(conn net.Conn) {
 	}
 	_ = sc.Err()
 
-	// Connection died: fail all in-flight calls on it.
+	// Connection died: fail only the in-flight calls that were written to
+	// it. Calls registered afterwards on a fresh connection (transport
+	// retry) must not be touched.
 	c.mu.Lock()
 	if c.conn == conn {
 		c.conn = nil
 	}
 	for id, p := range c.pending {
+		if p.conn != conn {
+			continue
+		}
 		close(p.self)
 		delete(c.pending, id)
 	}

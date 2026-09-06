@@ -62,14 +62,14 @@ bsk daemon 在 `~/.bsk/run/daemon.sock` 暴露 Unix socket JSON-RPC（协议 1.1
 
 | # | 迭代 | 内容 | 文档 |
 |---|------|------|------|
-| 1 | IPC 客户端包 | `internal/engine/bskclient`：连接管理、rpc 复用、结构化错误、假 daemon 单测 | [01-ipc-client.md](01-ipc-client.md) |
-| 2 | 引擎重写 | `BskEngine` 全部跑在 IPC 上：真并发轮询（每 tab 独立）、透明会话自愈（含 daemon 5min 空闲回收）、结构化错误→用户可读信息 | [02-engine-rewrite.md](02-engine-rewrite.md) |
-| 2.5 | Live 验证 | qwen 真实登录态全流程（send→wait→extract）+ 六站矩阵抽测 | 并入 02 文档 |
-| 3 | 进度可见 | 引擎上报阶段（sending/ generating/extracting）→ WS 推送 → 卡片实时阶段+秒表 | [03-progress-ux.md](03-progress-ux.md) |
-| 4 | 操作便利 | 单站点重试按钮 + 答案一键复制 | [04-retry-copy.md](04-retry-copy.md) |
-| 5 | 健康可见 | `/api/engine/status`：bsk daemon/扩展、browser-act CLI 可用性；侧栏徽标 | [05-engine-health.md](05-engine-health.md) |
-| 6 | 视觉打磨 | 暗色模式、卡片/代码块细节、空状态 | [06-visual-polish.md](06-visual-polish.md) |
-| 7 | 收尾 | ADR-0002 增补、CLAUDE.md 更新、浏览器端到端实测 | 并入 06 文档 |
+| 1 | IPC 客户端包 | `internal/engine/bskclient`：连接管理、rpc 复用、结构化错误、假 daemon 单测 | [01-ipc-client.md](01-ipc-client.md) ✅ |
+| 2 | 引擎重写 | `BskEngine` 全部跑在 IPC 上：真并发轮询（每 tab 独立）、透明会话自愈（含 daemon 5min 空闲回收）、结构化错误→用户可读信息 | [02-engine-rewrite.md](02-engine-rewrite.md) ✅ |
+| 2.5 | Live 验证 | 六站真实登录态全矩阵 6/6 通过 | 并入 02 文档 ✅ |
+| 3 | 进度可见 + 自愈 | 引擎阶段上报 → WS → 卡片实时阶段+秒表；发送失败三级抢救链（重发/reload/提取兜底） | [03-progress-ux.md](03-progress-ux.md) ✅ |
+| 4 | 操作便利 | 单站点重试按钮 + 答案一键复制 | 待下个工作窗 |
+| 5 | 健康可见 | `/api/engine/status`：bsk daemon/扩展、browser-act CLI 可用性；侧栏徽标 | 待下个工作窗 |
+| 6 | 视觉打磨 | 暗色模式、卡片/代码块细节、空状态 | 待下个工作窗 |
+| 7 | 收尾 | ADR-0002 增补 ✅、CLAUDE.md 更新 ✅、浏览器端到端实测 ✅ | 完成 |
 
 ## 风险与对策
 

@@ -23,5 +23,39 @@
   textarea.dispatchEvent(new KeyboardEvent("keydown", {
     key: "Enter", code: "Enter", which: 13, keyCode: 13, bubbles: true,
   }));
-  return globalThis.__KC_LIB__.safeStringify({ ok: true, mode: "enter" });
+
+  // Verify the editor consumed the prompt; on a freshly mounted editor the
+  // synthetic Enter is sometimes swallowed. Fall back to clicking the
+  // composer's send button (a div.ds-button--circle, not a <button>).
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      if ((textarea.value || "").trim().length === 0) {
+        resolve(globalThis.__KC_LIB__.safeStringify({ ok: true, mode: "enter" }));
+        return;
+      }
+      const candidates = [
+        '.ds-button--primary.ds-button--circle',
+        'div[class*="ds-button"][class*="circle"]',
+      ];
+      let clicked = false;
+      for (const sel of candidates) {
+        const btn = Array.from(document.querySelectorAll(sel)).find((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+        if (btn) {
+          btn.click();
+          clicked = true;
+          break;
+        }
+      }
+      setTimeout(() => {
+        const consumed = (textarea.value || "").trim().length === 0;
+        resolve(globalThis.__KC_LIB__.safeStringify({
+          ok: consumed, mode: clicked ? "button" : "enter", consumed,
+          error: consumed ? undefined : "prompt not consumed after enter+button",
+        }));
+      }, 800);
+    }, 800);
+  });
 })();

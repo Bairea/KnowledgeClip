@@ -75,6 +75,48 @@ func bskWaitDeadline() time.Duration {
 	return 180 * time.Second
 }
 
+// bskResendAfter is how long waitForAnswer tolerates "prompt accepted but no
+// assistant content" before resending the prompt once.
+func bskResendAfter() time.Duration {
+	if v := os.Getenv("BSK_RESEND_AFTER"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 45 * time.Second
+}
+
+// bskSendVerifyAfter is how long to wait before probing whether the send
+// actually consumed the prompt (editor still holds the text = failed send).
+func bskSendVerifyAfter() time.Duration {
+	if v := os.Getenv("BSK_SEND_VERIFY_AFTER"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 8 * time.Second
+}
+
+// editorTextLen returns the length of the longest text sitting in any page
+// editor (textarea / contenteditable), via a site-agnostic inline probe.
+// -1 when the probe cannot run (treated as "unknown").
+func (e *BskEngine) editorTextLen(ctx context.Context, site models.Site, tab *bskTab) int {
+	sid, err := e.ensureSession(ctx)
+	if err != nil {
+		return -1
+	}
+	expr := `(() => { let max = 0; document.querySelectorAll('textarea, [contenteditable="true"]').forEach(el => { const t = el.tagName === 'TEXTAREA' ? (el.value || '') : (el.innerText || el.textContent || ''); const n = t.trim().length; if (n > max) max = n; }); return max; })()`
+	raw, err := e.client.Evaluate(ctx, sid, tab.tabID, expr, bskEvalTimeout())
+	if err != nil {
+		return -1
+	}
+	var n float64
+	if json.Unmarshal(raw, &n) != nil {
+		return -1
+	}
+	return int(n)
+}
+
 // NewBskEngine creates a new bsk engine. The bsk CLI is required on PATH for
 // daemon lifecycle (`daemon start`); the extension connection is verified
 // lazily at session start.
@@ -378,19 +420,23 @@ func (e *BskEngine) SendMessage(ctx context.Context, site models.Site, prompt st
 	if err != nil {
 		return "", fmt.Errorf("ensure tab: %w", err)
 	}
+	ReportProgress(ctx, ProgressInput)
 
 	if err := e.waitForInput(ctx, site, tab); err != nil {
 		return "", err // already user-readable
 	}
 
+	ReportProgress(ctx, ProgressSending)
 	if _, err := e.evalStep(ctx, site, tab, "send_prompt.js", map[string]any{"prompt": prompt}); err != nil {
 		return "", fmt.Errorf("发送失败: %w", err)
 	}
 
-	if err := e.waitForAnswer(ctx, site, tab); err != nil {
+	ReportProgress(ctx, ProgressGenerating)
+	if err := e.waitForAnswer(ctx, site, tab, prompt); err != nil {
 		return "", err
 	}
 
+	ReportProgress(ctx, ProgressExtracting)
 	return e.extractAnswer(ctx, site, tab)
 }
 
@@ -439,8 +485,19 @@ func (e *BskEngine) waitForInput(ctx context.Context, site models.Site, tab *bsk
 }
 
 // waitForAnswer polls wait_answer.js until the answer text stabilizes.
-func (e *BskEngine) waitForAnswer(ctx context.Context, site models.Site, tab *bskTab) error {
+// Two rescues keep transient site misbehavior from failing the send:
+//
+//   - stuck-send: the site accepted the prompt but no assistant message
+//     ever appeared → resend the prompt once (fresh window);
+//   - timeout rescue: on deadline, try extraction anyway — the answer may
+//     have completed between polls or stability tracking may have missed.
+func (e *BskEngine) waitForAnswer(ctx context.Context, site models.Site, tab *bskTab, prompt string) error {
 	deadline := time.Now().Add(bskWaitDeadline())
+	start := time.Now()
+	resent := false
+	reloaded := false
+	promptLen := len([]rune(prompt))
+
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -455,12 +512,68 @@ func (e *BskEngine) waitForAnswer(ctx context.Context, site models.Site, tab *bs
 				if rm["done"] == true {
 					return nil
 				}
+				// Send-failure rescues (each fires at most once):
+				//   a) editor still holds the prompt after sendVerifyAfter —
+				//      the submit never went through → resend immediately;
+				//   b) prompt consumed but no assistant content after
+				//      resendAfter — the SPA may have swallowed the render
+				//      (conversation exists server-side) → reload the tab;
+				//   c) still nothing after the reload → resend the prompt.
+				if count := assistantCount(rm); count == 0 {
+					elapsed := time.Since(start)
+					if !resent && !reloaded && elapsed > bskSendVerifyAfter() {
+						if n := e.editorTextLen(ctx, site, tab); n >= promptLen*2/3 && n > 0 {
+							resent = true
+							start = time.Now()
+							log.Printf("[bsk] %s: editor still holds the prompt (send not consumed) — resending", site.ID)
+							if _, err := e.evalStep(ctx, site, tab, "send_prompt.js", map[string]any{"prompt": prompt}); err != nil {
+								log.Printf("[bsk] %s resend failed: %v", site.ID, err)
+							}
+						}
+					}
+					if !reloaded && time.Since(start) > bskResendAfter() {
+						reloaded = true
+						start = time.Now()
+						log.Printf("[bsk] %s: prompt consumed but no assistant content — reloading tab", site.ID)
+						if sid, serr := e.ensureSession(ctx); serr == nil {
+							if _, rerr := e.client.Evaluate(ctx, sid, tab.tabID, "location.reload(); true", bskEvalTimeout()); rerr != nil {
+								log.Printf("[bsk] %s reload failed: %v", site.ID, rerr)
+							}
+						}
+						time.Sleep(5 * time.Second) // let the page come back before polling resumes
+						continue
+					}
+					if reloaded && !resent && time.Since(start) > bskResendAfter() {
+						resent = true
+						start = time.Now()
+						log.Printf("[bsk] %s: still no assistant content after reload — resending prompt", site.ID)
+						if _, err := e.evalStep(ctx, site, tab, "send_prompt.js", map[string]any{"prompt": prompt}); err != nil {
+							log.Printf("[bsk] %s resend failed: %v", site.ID, err)
+						}
+					}
+				}
 			}
 		}
 		// wait_answer errors (transient DOM churn) are not fatal; keep polling.
 		time.Sleep(2 * time.Second)
 	}
+
+	// Timeout rescue: extract whatever is on the page. A completed answer
+	// beats a timeout error for the user.
+	if text, err := e.extractAnswer(ctx, site, tab); err == nil && text != "" {
+		log.Printf("[bsk] %s: wait timed out but extraction found %d chars — using it", site.ID, len(text))
+		return nil
+	}
 	return fmt.Errorf("%s 回答在 %s 内未稳定（站点生成过慢或页面异常）", site.ID, bskWaitDeadline())
+}
+
+// assistantCount extracts the assistant message count from a wait_answer
+// result; -1 when the script doesn't report it (never triggers resend).
+func assistantCount(rm map[string]any) int {
+	if v, ok := rm["answerCount"].(float64); ok {
+		return int(v)
+	}
+	return -1
 }
 
 // extractAnswer extracts the final answer markdown from the page.

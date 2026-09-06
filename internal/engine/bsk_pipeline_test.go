@@ -21,14 +21,18 @@ import (
 type bskPipelineFake struct {
 	ln net.Listener
 
-	mu           sync.Mutex
-	waitNotDone  int  // evaluate calls answering done=false before done=true
-	evalCalls    int
-	failFirstN   int               // first N evaluates fail with failErr
-	failErr      *bskclient.RPCError
-	loginWall    bool              // detect_input reports a foreign login host
-	sessions     []string
-	stoppedCount int
+	mu              sync.Mutex
+	waitNotDone     int // evaluate calls answering done=false before done=true
+	evalCalls       int
+	failFirstN      int // first N evaluates fail with failErr
+	failErr         *bskclient.RPCError
+	loginWall       bool // detect_input reports a foreign login host
+	stuckGeneration bool // wait_answer never reports done, answerCount stays 0
+	sendCount       int  // send_prompt.js evaluations
+	reloadCount     int  // location.reload() evaluations
+	editorLen       int  // editor-text probe answer (-1: reply invalid)
+	sessions        []string
+	stoppedCount    int
 }
 
 func newBskPipelineFake(t *testing.T) *bskPipelineFake {
@@ -154,9 +158,12 @@ func (f *bskPipelineFake) dispatch(conn net.Conn, line []byte) {
 			b, _ := json.Marshal(map[string]any{"ready": !f.loginWall, "url": url})
 			payload = string(b)
 		case strings.Contains(expr, "send_prompt.js"):
+			f.sendCount++
 			payload = `{"ok": true}`
 		case strings.Contains(expr, "wait_answer.js"):
-			if f.waitNotDone > 0 {
+			if f.stuckGeneration {
+				payload = `{"done": false, "answerCount": 0, "lastTextLen": 0, "url": "https://test.local/"}`
+			} else if f.waitNotDone > 0 {
 				f.waitNotDone--
 				payload = `{"done": false, "url": "https://test.local/"}`
 			} else {
@@ -164,6 +171,13 @@ func (f *bskPipelineFake) dispatch(conn net.Conn, line []byte) {
 			}
 		case strings.Contains(expr, "extract_answer.js"):
 			payload = `{"text": "# 回答\n\n完整 **markdown** 内容。"}`
+		case strings.Contains(expr, "location.reload"):
+			f.reloadCount++
+			payload = `true`
+		case strings.Contains(expr, "contenteditable"):
+			// editor-text probe; the daemon returns numbers unwrapped
+			// (negative mimics a failed probe)
+			f.reply(conn, frame.ID, map[string]any{"ok": true, "tab_id": 4242, "value": f.editorLen})
 		default:
 			payload = `{"ok": true}`
 		}
@@ -265,6 +279,79 @@ func TestBskPipelineSessionRecovery(t *testing.T) {
 	f.mu.Unlock()
 	if nSessions < 2 {
 		t.Fatalf("expected a rebuilt session, engine used %d", nSessions)
+	}
+}
+
+func TestBskPipelineRescueConsumedButEmpty(t *testing.T) {
+	f := newBskPipelineFake(t)
+	f.mu.Lock()
+	// Send consumed (editor empty) but the site never renders an answer:
+	// expect the reload rescue, then the deadline extraction rescue.
+	f.stuckGeneration = true
+	f.editorLen = 0
+	f.mu.Unlock()
+
+	t.Setenv("BSK_RESEND_AFTER", "300ms")
+	t.Setenv("BSK_WAIT_DEADLINE", "5s")
+
+	eng := newBskTestEngine(t, f, newBskFixtureScripts(t))
+	defer eng.Close()
+
+	site := models.Site{ID: "testsite", Name: "Test", URL: "https://test.local/"}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	answer, err := eng.SendMessage(ctx, site, "你好")
+	if err != nil {
+		t.Fatalf("reload+extraction rescue should return the page answer: %v", err)
+	}
+	if !strings.Contains(answer, "完整 **markdown** 内容") {
+		t.Fatalf("unexpected rescued answer: %q", answer)
+	}
+
+	f.mu.Lock()
+	reloads, sends := f.reloadCount, f.sendCount
+	f.mu.Unlock()
+	if reloads != 1 {
+		t.Fatalf("expected exactly one tab reload, got %d", reloads)
+	}
+	if sends != 1 {
+		t.Fatalf("consumed prompt must not trigger a resend, got %d sends", sends)
+	}
+}
+
+func TestBskPipelineResendWhenSendNotConsumed(t *testing.T) {
+	f := newBskPipelineFake(t)
+	f.mu.Lock()
+	// Editor still holds the prompt: the send never went through. Expect an
+	// immediate resend (no reload).
+	f.stuckGeneration = true
+	f.editorLen = 30
+	f.mu.Unlock()
+
+	t.Setenv("BSK_SEND_VERIFY_AFTER", "300ms")
+	t.Setenv("BSK_RESEND_AFTER", "1h") // disable the consumed-empty path
+	t.Setenv("BSK_WAIT_DEADLINE", "4s")
+
+	eng := newBskTestEngine(t, f, newBskFixtureScripts(t))
+	defer eng.Close()
+
+	site := models.Site{ID: "testsite", Name: "Test", URL: "https://test.local/"}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if _, err := eng.SendMessage(ctx, site, "你好"); err != nil {
+		t.Fatalf("resend + extraction rescue should answer: %v", err)
+	}
+
+	f.mu.Lock()
+	reloads, sends := f.reloadCount, f.sendCount
+	f.mu.Unlock()
+	if sends != 2 {
+		t.Fatalf("expected exactly one resend (2 sends total), got %d", sends)
+	}
+	if reloads != 0 {
+		t.Fatalf("unconsumed send must not trigger a reload, got %d", reloads)
 	}
 }
 

@@ -16,6 +16,7 @@ type MessageUpdate struct {
 	Content   string `json:"content,omitempty"`
 	Error     string `json:"error,omitempty"`
 	ElapsedMs int    `json:"elapsed_ms,omitempty"`
+	Stage     string `json:"stage,omitempty"`
 	Done      bool   `json:"done"`
 }
 

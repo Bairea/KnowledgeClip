@@ -27,6 +27,10 @@ export interface Message {
   created_at: string
   loading?: boolean
   turn?: number
+  /** 当前管线阶段（仅 loading 时有意义）：input | sending | generating | extracting */
+  stage?: string
+  /** 收到最后一次进度事件的本地时间戳（ms），用于实时计时 */
+  stageAt?: number
 }
 
 export interface Turn {

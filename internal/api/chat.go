@@ -87,6 +87,15 @@ func (s *Server) handleChat(c *gin.Context) {
 
 	go func() {
 		batchStart := time.Now()
+		onProgress := func(siteID, stage string, elapsedMs int) {
+			s.hub.Broadcast(MessageUpdate{
+				Type:      "progress",
+				SessionID: sessionID,
+				SiteID:    siteID,
+				Stage:     stage,
+				ElapsedMs: elapsedMs,
+			})
+		}
 		s.manager.SendToSites(context.Background(), targetSites, req.Prompt, isNewSession, func(site models.Site, content string, err error) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -125,7 +134,7 @@ func (s *Server) handleChat(c *gin.Context) {
 				ElapsedMs: elapsed,
 				Done:      true,
 			})
-		})
+		}, onProgress)
 		s.hub.Broadcast(MessageUpdate{
 			Type:      "complete",
 			SessionID: sessionID,

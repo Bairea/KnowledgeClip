@@ -1,4 +1,4 @@
-import { ReactNode } from 'react'
+import { ReactNode, useEffect, useReducer } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -10,6 +10,51 @@ interface MessageCardProps {
   message: Message
   siteName: string
   onToggleKeep: (id: string) => void
+}
+
+const STAGE_ORDER = ['input', 'sending', 'generating', 'extracting'] as const
+
+const STAGE_LABELS: Record<string, string> = {
+  input: '连接站点',
+  sending: '发送提问',
+  generating: '生成回答中',
+  extracting: '提取回答',
+}
+
+/** 四段管线步进条：已完成阶段实心，当前阶段呼吸，未到阶段空心。 */
+function StageDots({ stage }: { stage?: string }) {
+  const current = STAGE_ORDER.indexOf((stage || 'input') as (typeof STAGE_ORDER)[number])
+  return (
+    <span className="flex items-center gap-1" title={STAGE_LABELS[stage || 'input']}>
+      {STAGE_ORDER.map((s, i) => (
+        <span
+          key={s}
+          className={`h-1 w-4 transition-colors duration-300 ${
+            i < current
+              ? 'bg-[var(--accent-soft)]'
+              : i === current
+                ? 'animate-pulse bg-[var(--accent)]'
+                : 'bg-[var(--line)]'
+          }`}
+        />
+      ))}
+    </span>
+  )
+}
+
+/** 实时秒表：加载期间每秒刷新。 */
+function ElapsedTicker({ since }: { since: number }) {
+  const [, tick] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    const t = setInterval(tick, 1000)
+    return () => clearInterval(t)
+  }, [])
+  const secs = Math.max(0, Math.round((Date.now() - since) / 1000))
+  return (
+    <span className="font-mono text-[10px] tabular-nums tracking-[0.1em] text-[var(--ink-muted)]">
+      {secs}s
+    </span>
+  )
 }
 
 function extractCodeInfo(children: ReactNode): { language: string; code: string } {
@@ -27,26 +72,39 @@ function extractCodeInfo(children: ReactNode): { language: string; code: string 
 }
 
 export default function MessageCard({ message, siteName, onToggleKeep }: MessageCardProps) {
+  const stage = message.loading ? message.stage || 'input' : ''
+  const tickerSince = message.stageAt ?? (Date.parse(message.created_at) || Date.now())
   return (
-    <article className="flex flex-col overflow-hidden border border-[var(--line)] bg-[var(--surface-raised)]">
+    <article className="relative flex flex-col overflow-hidden border border-[var(--line)] bg-[var(--surface-raised)] transition-colors hover:border-[var(--line-strong)]">
+      {message.loading && (
+        <div className="absolute inset-x-0 top-0 h-0.5 overflow-hidden">
+          <div className="h-full w-1/3 animate-[slide_1.6s_ease-in-out_infinite] bg-[var(--accent)]" />
+        </div>
+      )}
       <header className="flex items-center justify-between border-b border-[var(--line-soft)] bg-[var(--paper-soft)] px-4 py-2">
         <div className="flex items-baseline gap-2">
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--ink-faint)]">№</span>
           <span className="font-ui text-[13px] font-semibold text-[var(--ink)]">{siteName}</span>
         </div>
-        {message.loading && (
-          <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--accent)]">
-            <span className="inline-block h-1.5 w-1.5 translate-y-[-1px] animate-pulse bg-[var(--accent)] mr-1.5"></span>
-            composing
-          </span>
-        )}
+        {message.loading ? (
+          <div className="flex items-center gap-2.5">
+            <StageDots stage={stage} />
+            <span className="font-ui text-[11px] text-[var(--ink-muted)]">
+              {STAGE_LABELS[stage]}
+            </span>
+            <ElapsedTicker since={tickerSince} />
+          </div>
+        ) : null}
       </header>
       <div className="max-h-[440px] min-h-[120px] flex-1 overflow-y-auto px-6 py-5 scroll-smooth scrollbar-thin">
         {message.error ? (
-          <p className="font-ui text-sm text-[var(--danger)]">{message.error}</p>
+          <p className="font-ui text-sm leading-relaxed text-[var(--danger)]">{message.error}</p>
         ) : message.loading && !message.content ? (
-          <div className="flex h-32 items-center justify-center">
-            <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-[var(--ink-faint)] animate-pulse">awaiting response</span>
+          <div className="flex h-32 flex-col items-center justify-center gap-3">
+            <StageDots stage={stage} />
+            <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-[var(--ink-faint)] animate-pulse">
+              {STAGE_LABELS[stage]}
+            </span>
           </div>
         ) : (
           <div className="font-reading prose prose-stone prose-sm max-w-none

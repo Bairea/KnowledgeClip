@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"chat-aggregator/internal/models"
 	"chat-aggregator/internal/storage"
@@ -166,11 +167,16 @@ func (m *Manager) SendMessage(ctx context.Context, site models.Site, prompt stri
 	return "", fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 }
 
+// SiteProgressFunc receives per-site stage transitions during a batch send.
+// elapsedMs is measured from the batch's per-site start.
+type SiteProgressFunc func(siteID, stage string, elapsedMs int)
+
 // SendToSites sends a prompt to multiple sites, calling onResult for each site
-// as it completes. Browser-act sites are routed to the batch coordinator
-// (single-active-tab constraint); other-engine sites are sent concurrently —
-// the bsk engine polls its per-site tabs over the daemon socket in parallel.
-func (m *Manager) SendToSites(ctx context.Context, sites []models.Site, prompt string, isNewSession bool, onResult func(site models.Site, content string, err error)) {
+// as it completes and onProgress for stage transitions (may be nil).
+// Browser-act sites are routed to the batch coordinator (single-active-tab
+// constraint); other-engine sites are sent concurrently — the bsk engine
+// polls its per-site tabs over the daemon socket in parallel.
+func (m *Manager) SendToSites(ctx context.Context, sites []models.Site, prompt string, isNewSession bool, onResult func(site models.Site, content string, err error), onProgress SiteProgressFunc) {
 	var wg sync.WaitGroup
 
 	var baSites, otherSites []models.Site
@@ -182,11 +188,18 @@ func (m *Manager) SendToSites(ctx context.Context, sites []models.Site, prompt s
 		}
 	}
 
-	// Browser-act sites: use batch coordinator (single goroutine, round-robin)
+	// Browser-act sites: use batch coordinator (single goroutine, round-robin).
+	// The coordinator fans out internally with a shared timeline, so only the
+	// initial stage is reported per site here.
 	if len(baSites) > 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if onProgress != nil {
+				for _, site := range baSites {
+					onProgress(site.ID, ProgressInput, 0)
+				}
+			}
 			for _, eng := range m.engines {
 				if eng.Name() != "browser-act" {
 					continue
@@ -204,6 +217,12 @@ func (m *Manager) SendToSites(ctx context.Context, sites []models.Site, prompt s
 		wg.Add(1)
 		go func(site models.Site) {
 			defer wg.Done()
+			start := time.Now()
+			pctx := WithProgress(ctx, func(stage string) {
+				if onProgress != nil {
+					onProgress(site.ID, stage, int(time.Since(start).Milliseconds()))
+				}
+			})
 			if isNewSession {
 				m.StartNewChat([]models.Site{site})
 			}
@@ -211,7 +230,7 @@ func (m *Manager) SendToSites(ctx context.Context, sites []models.Site, prompt s
 			if site.FormatPrompt != "" {
 				actualPrompt = prompt + "\n\n" + site.FormatPrompt
 			}
-			content, err := m.SendMessage(ctx, site, actualPrompt)
+			content, err := m.SendMessage(pctx, site, actualPrompt)
 			onResult(site, content, err)
 		}(site)
 	}

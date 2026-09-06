@@ -112,3 +112,13 @@
     border-color: var(--line);
   }
 }
+
+/* 卡片加载进度条：一段光带从左到右循环滑动 */
+@keyframes slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}

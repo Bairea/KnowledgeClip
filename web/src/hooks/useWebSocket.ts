@@ -8,6 +8,7 @@ interface WSMessage {
   content?: string
   error?: string
   elapsed_ms?: number
+  stage?: string
   done: boolean
 }
 

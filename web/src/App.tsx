@@ -31,6 +31,7 @@ interface WSMessage {
   content?: string
   error?: string
   elapsed_ms?: number
+  stage?: string
   done: boolean
 }
 
@@ -63,7 +64,18 @@ export default function App() {
   const currentTurnRef = useRef(0)
 
   useWebSocket((msg: WSMessage) => {
-    if (msg.type === 'message' && msg.site_id) {
+    if (msg.type === 'progress' && msg.site_id) {
+      const siteId = msg.site_id
+      const stage = msg.stage || ''
+      const turn = currentTurnRef.current
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.loading && m.site_id === siteId && m.turn === turn
+            ? { ...m, stage, stageAt: Date.now() }
+            : m,
+        ),
+      )
+    } else if (msg.type === 'message' && msg.site_id) {
       const siteId = msg.site_id
       const content = msg.content || ''
       const error = msg.error || ''

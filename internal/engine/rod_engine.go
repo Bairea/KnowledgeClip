@@ -1580,6 +1580,7 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 			return "", fmt.Errorf("get page: %w", err)
 		}
 	}
+	ReportProgress(ctx, ProgressInput)
 
 	if sels.Answer == "" {
 		fallbackJs := `() => {
@@ -1671,6 +1672,7 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 		promptFirst = prompt
 	}
 
+	ReportProgress(ctx, ProgressSending)
 	if err := re.typePrompt(page, sels.Input, prompt); err != nil {
 		return "", fmt.Errorf("type prompt: %w", err)
 	}
@@ -1721,6 +1723,7 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 	} else {
 		_ = re.submitPrompt(page, "", sels.Input)
 	}
+	ReportProgress(ctx, ProgressGenerating)
 	time.Sleep(1 * time.Second)
 
 	diagJs := fmt.Sprintf(`
@@ -2617,6 +2620,7 @@ func (re *RodEngine) SendMessage(ctx context.Context, site models.Site, prompt s
 done:
 	// Stop the high-frequency JS capture interval (if still running).
 	page.Timeout(2 * time.Second).Eval(`() => { if (window.__answerCaptureInterval) { clearInterval(window.__answerCaptureInterval); window.__answerCaptureInterval = null; } }`)
+	ReportProgress(ctx, ProgressExtracting)
 	log.Printf("[rod] answer stabilized, extracting content (strategy=%s)", sels.ContentStrategy)
 
 	// If early extraction already set finalText (e.g. clipboard succeeded during
